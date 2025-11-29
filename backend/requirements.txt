@@ -1,0 +1,8 @@
+upstox-python-sdk
+pandas==2.2.2
+python-dotenv
+requests
+fastapi
+uvicorn[standard]
+scipy
+websocket-client

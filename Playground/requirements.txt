@@ -1,0 +1,4 @@
+upstox-python-sdk
+websocket-client
+protobuf
+python-dotenv

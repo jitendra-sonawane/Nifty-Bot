@@ -1,0 +1,68 @@
+# Environment and Secrets
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+logs/
+server.log
+uvicorn.log
+frontend.log
+
+# Data and State Files
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
+*.csv
+*.csv.gz
+
+# Node modules
+node_modules/
+
+# Frontend Build
+frontend/dist/
+frontend/build/
+frontend/.vite/
+
+# Backend
+backend/NSE.csv*
+backend/ai_training_data.csv
+backend/paper_trading_data.json
+backend/positions_data.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+*.dockerfile.swp
+
+# Test files
+test_*.py
+check_*.py
+
+# Temporary files
+*.tmp
+*.bak
