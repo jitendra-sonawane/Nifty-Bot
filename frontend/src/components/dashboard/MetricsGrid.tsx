@@ -27,9 +27,17 @@ const MetricsGrid: React.FC<MetricsGridProps> = ({ currentPrice, priceHistory, s
             {/* Signal Card */}
             <div className="card p-4 rounded-xl bg-gradient-to-b from-white/5 to-white/0 border border-white/5 shadow-lg">
                 <h3 className="text-xs text-gray-400 uppercase tracking-wider mb-2">Signal</h3>
-                <div className={`text-2xl font-bold mb-2 ${signal.includes('BUY') ? 'text-green-400' : signal.includes('SELL') ? 'text-red-400' : 'text-cyan-400'}`}>
+                <div className={`text-2xl font-bold mb-1 ${signal.includes('BUY') ? 'text-green-400' : signal.includes('SELL') ? 'text-red-400' : 'text-cyan-400'}`}>
                     {signal}
                 </div>
+                {/* Show ATM Strike for BUY signals */}
+                {(signal === 'BUY_CE' || signal === 'BUY_PE') && status?.strategy_data?.greeks?.atm_strike && (
+                    <div className="flex items-center gap-2 mb-1 bg-purple-500/10 border border-purple-500/30 rounded px-2 py-1.5">
+                        <span className="text-[10px] text-gray-400">Target Strike:</span>
+                        <span className="text-sm font-bold text-purple-300 font-mono">₹{status.strategy_data.greeks.atm_strike}</span>
+                        <span className="text-[10px] text-gray-500">{signal === 'BUY_CE' ? 'CE' : 'PE'}</span>
+                    </div>
+                )}
                 <div className="text-[10px] text-gray-400 truncate">{status?.decision_reason || "Analyzing..."}</div>
             </div>
 

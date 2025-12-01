@@ -236,7 +236,8 @@ class TradingReasoning:
         if not filters.get('rsi'):
             failing_reasons.append("RSI not in extreme zone (weak momentum)")
         if not filters.get('price_vwap'):
-            failing_reasons.append("Price too close to VWAP (no clear direction)")
+            # Note: This filter is always passing for index instruments
+            failing_reasons.append("Price vs VWAP (Info: VWAP informational only for indices)")
         if not filters.get('volume'):
             failing_reasons.append("Volume too low (weak confirmation)")
         if not filters.get('volatility'):

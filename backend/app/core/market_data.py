@@ -29,6 +29,14 @@ class MarketDataManager:
         self.latest_vix = None
         self.latest_sentiment = {}
         self.latest_greeks = None
+
+        
+        # Option instruments for WebSocket streaming
+        self.option_ce_key = None
+        self.option_pe_key = None
+        self.option_ce_price = 0.0
+        self.option_pe_price = 0.0
+        self.option_expiry = None
         
         # Event Callbacks
         self.on_price_update: List[Callable] = []
@@ -57,11 +65,41 @@ class MarketDataManager:
                 raise ImportError("MarketDataStreamerV3 not available")
             
             logger.info("Creating MarketDataStreamerV3...")
-            # Initialize with access token and initial subscriptions
+            
+            # Get ATM option keys for WebSocket subscription
+            # Use fallback price if current_price not yet available
+            initial_price = self.current_price if self.current_price > 0 else 24000
+            self.atm_strike = round(initial_price / 50) * 50
+            
+            # Get nearest expiry
+            self.option_expiry = self.data_fetcher.get_nearest_expiry()
+            
+            # Get option instrument keys
+            if self.option_expiry:
+                self.option_ce_key = self.data_fetcher.get_option_instrument_key(
+                    "NIFTY", self.option_expiry, self.atm_strike, "CE"
+                )
+                self.option_pe_key = self.data_fetcher.get_option_instrument_key(
+                    "NIFTY", self.option_expiry, self.atm_strike, "PE"
+                )
+            
+            # Build instrument keys array
+            instrument_keys = [self.nifty_key]
+            if self.option_ce_key and self.option_pe_key:
+                instrument_keys.extend([self.option_ce_key, self.option_pe_key])
+                logger.info(f"✅ Option instruments found for ATM {self.atm_strike}")
+                logger.info(f"   CE: {self.option_ce_key}")
+                logger.info(f"   PE: {self.option_pe_key}")
+                logger.info(f"   Expiry: {self.option_expiry}")
+            else:
+                logger.warning(f"⚠️ Could not find option instruments for ATM {self.atm_strike}")
+                logger.warning(f"   Will only stream Nifty 50 prices")
+            
+            # Initialize with access token and all instruments
             self.streamer = MarketDataStreamerV3(
                 api_client=None,  # Will create internally
-                instrumentKeys=[self.nifty_key],
-                mode="ltpc"  # Lightweight mode for fast updates
+                instrumentKeys=instrument_keys,  # Nifty + Options!
+                mode="full"  # Full mode for option data (bid/ask/oi)
             )
             
             # Set access token
@@ -96,7 +134,7 @@ class MarketDataManager:
             # Start background tasks
             self.tasks.append(asyncio.create_task(self._price_monitor_loop()))
             self.tasks.append(asyncio.create_task(self._pcr_loop()))
-            self.tasks.append(asyncio.create_task(self._greeks_loop()))
+            # self.tasks.append(asyncio.create_task(self._greeks_loop()))  # Disabled in favor of WebSocket streaming
             self.tasks.append(asyncio.create_task(self._connection_monitor()))
             logger.info("✅ All background tasks started")
         except Exception as e:
@@ -112,28 +150,67 @@ class MarketDataManager:
             if isinstance(message, dict) and "feeds" in message:
                 for key, feed in message["feeds"].items():
                     if isinstance(feed, dict):
-                        # Check for ltpc (Last Traded Price Container)
+                        # Extract LTP from various possible structures
                         price = None
-                        if "ltpc" in feed and isinstance(feed["ltpc"], dict):
+                        
+                        # Handle fullFeed structure (V3 API)
+                        if "fullFeed" in feed:
+                            ff = feed["fullFeed"]
+                            # Check for Index Feed
+                            if "indexFF" in ff and "ltpc" in ff["indexFF"]:
+                                price = ff["indexFF"]["ltpc"].get("ltp")
+                            # Check for Market Feed (Options/Stocks)
+                            elif "marketFF" in ff and "ltpc" in ff["marketFF"]:
+                                price = ff["marketFF"]["ltpc"].get("ltp")
+                        
+                        # Handle flat structure (if any)
+                        elif "ltpc" in feed and isinstance(feed["ltpc"], dict):
                             price = feed["ltpc"].get("ltp")
                         elif "ltp" in feed:
                             price = feed["ltp"]
                         
                         if price is not None:
-                            self.current_price = float(price)
-                            self.atm_strike = round(self.current_price / 50) * 50
-                            logger.info(f"💰 Price update: {key} = ₹{price:.2f} (ATM: {self.atm_strike})")
+                            price = float(price)
                             
-                            # Emit callback
-                            for callback in self.on_price_update:
-                                if asyncio.iscoroutinefunction(callback):
-                                    # Can't use asyncio.create_task here, we're in a thread
-                                    logger.debug(f"Skipping async callback from thread context")
+                            # Check if this is Nifty 50
+                            if key == self.nifty_key:
+                                self.current_price = price
+                                
+                                # Check if ATM has changed
+                                new_atm = round(self.current_price / 50) * 50
+                                if new_atm != self.atm_strike and self.atm_strike > 0:
+                                    # ATM has changed, trigger async resubscription
+                                    logger.info(f"🔔 ATM strike changing: {self.atm_strike} → {new_atm}")
+                                    asyncio.create_task(self._resubscribe_atm_options(new_atm))
                                 else:
-                                    try:
-                                        callback(price)
-                                    except Exception as e:
-                                        logger.error(f"Error in callback: {e}")
+                                    # Just update the ATM value for display
+                                    self.atm_strike = new_atm
+                                
+                                logger.info(f"💰 Nifty price: ₹{price:.2f} (ATM: {self.atm_strike})")
+                                
+                                # Emit callback
+                                for callback in self.on_price_update:
+                                    if asyncio.iscoroutinefunction(callback):
+                                        logger.debug(f"Skipping async callback from thread context")
+                                    else:
+                                        try:
+                                            callback(price)
+                                        except Exception as e:
+                                            logger.error(f"Error in callback: {e}")
+                            
+                            # Check if this is CE option
+                            elif key == self.option_ce_key:
+                                self.option_ce_price = price
+                                logger.info(f"📈 CE option ({self.atm_strike}): ₹{price:.2f}")
+                                # Calculate Greeks when we have both prices
+                                self._calculate_and_emit_greeks()
+                            
+                            # Check if this is PE option
+                            elif key == self.option_pe_key:
+                                self.option_pe_price = price
+                                logger.info(f"📉 PE option ({self.atm_strike}): ₹{price:.2f}")
+                                # Calculate Greeks when we have both prices
+                                self._calculate_and_emit_greeks()
                 
         except Exception as e:
             logger.error(f"Error processing streamer message: {e}", exc_info=True)
@@ -149,6 +226,141 @@ class MarketDataManager:
     def _on_streamer_close(self):
         """Called when streamer connection closes."""
         logger.warning("⚠️ Market data stream disconnected")
+    
+    def _calculate_and_emit_greeks(self):
+        """Calculate Greeks from cached option prices and emit update."""
+        try:
+            # Need all data to calculate Greeks
+            if not all([
+                self.current_price > 0,
+                self.option_ce_price > 0,
+                self.option_pe_price > 0,
+                self.atm_strike > 0,
+                self.option_expiry
+            ]):
+                return
+            
+            # Import GreeksCalculator
+            from app.core.greeks import GreeksCalculator
+            greeks_calc = GreeksCalculator()
+            
+            # Calculate time to expiry
+            T = greeks_calc.time_to_expiry(self.option_expiry)
+            if T <= 0:
+                logger.warning(f"⚠️ Expiry already passed: {self.option_expiry}")
+                return
+            
+            # Calculate IV for CE and PE
+            ce_iv = greeks_calc.implied_volatility(
+                self.option_ce_price, self.current_price, self.atm_strike, T, 'CE'
+            )
+            pe_iv = greeks_calc.implied_volatility(
+                self.option_pe_price, self.current_price, self.atm_strike, T, 'PE'
+            )
+            
+            # Calculate Greeks
+            ce_greeks = greeks_calc.calculate_greeks(
+                self.current_price, self.atm_strike, T, ce_iv, 'CE'
+            )
+            pe_greeks = greeks_calc.calculate_greeks(
+                self.current_price, self.atm_strike, T, pe_iv, 'PE'
+            )
+            
+            # Build Greeks data structure
+            self.latest_greeks = {
+                'atm_strike': self.atm_strike,
+                'expiry_date': str(self.option_expiry),
+                'ce': {
+                    'price': self.option_ce_price,
+                    'iv': ce_iv,
+                    **ce_greeks
+                },
+                'pe': {
+                    'price': self.option_pe_price,
+                    'iv': pe_iv,
+                    **pe_greeks
+                }
+            }
+            
+            logger.debug(f"📊 Greeks calculated: CE ₹{self.option_ce_price:.2f}, PE ₹{self.option_pe_price:.2f}")
+            
+            # Emit update to callbacks (similar to PCR updates)
+            data = {'greeks': self.latest_greeks}
+            for callback in self.on_market_data_update:
+                if asyncio.iscoroutinefunction(callback):
+                    try:
+                        asyncio.create_task(callback(data))
+                    except Exception as e:
+                        logger.error(f"Error in async greeks callback: {e}")
+                else:
+                    try:
+                        callback(data)
+                    except Exception as e:
+                        logger.error(f"Error in greeks callback: {e}")
+            
+        except Exception as e:
+            logger.error(f"Error calculating Greeks: {e}", exc_info=True)
+
+    async def _resubscribe_atm_options(self, new_atm_strike: int):
+        """
+        Resubscribe to new ATM options when strike changes.
+        
+        Args:
+            new_atm_strike: The new ATM strike price
+        """
+        try:
+            logger.info(f"🔄 ATM changed: {self.atm_strike} → {new_atm_strike}")
+            
+            # Get new option instrument keys
+            new_ce_key = self.data_fetcher.get_option_instrument_key(
+                "NIFTY", self.option_expiry, new_atm_strike, "CE"
+            )
+            new_pe_key = self.data_fetcher.get_option_instrument_key(
+                "NIFTY", self.option_expiry, new_atm_strike, "PE"
+            )
+            
+            if not new_ce_key or not new_pe_key:
+                logger.warning(f"⚠️ Could not find new ATM options for strike {new_atm_strike}")
+                return
+            
+            logger.info(f"📊 New option contracts:")
+            logger.info(f"   CE: {self.option_ce_key} → {new_ce_key}")
+            logger.info(f"   PE: {self.option_pe_key} → {new_pe_key}")
+            
+            # Unsubscribe from old options
+            old_keys = []
+            if self.option_ce_key:
+                old_keys.append(self.option_ce_key)
+            if self.option_pe_key:
+                old_keys.append(self.option_pe_key)
+            
+            if old_keys and self.streamer:
+                try:
+                    self.streamer.unsubscribe(old_keys)
+                    logger.info(f"✅ Unsubscribed from old options: {old_keys}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error unsubscribing: {e}")
+            
+            # Subscribe to new options
+            new_keys = [new_ce_key, new_pe_key]
+            if self.streamer:
+                self.streamer.subscribe(new_keys, "full")
+                logger.info(f"✅ Subscribed to new options: {new_keys}")
+            
+            # Update state
+            self.option_ce_key = new_ce_key
+            self.option_pe_key = new_pe_key
+            self.atm_strike = new_atm_strike
+            
+            # Reset prices (will be updated by new ticks)
+            self.option_ce_price = 0.0
+            self.option_pe_price = 0.0
+            
+            logger.info(f"🎯 ATM resubscription complete")
+            
+        except Exception as e:
+            logger.error(f"❌ Error in ATM resubscription: {e}", exc_info=True)
+
 
     async def stop(self):
         self.is_running = False
@@ -245,7 +457,7 @@ class MarketDataManager:
             await asyncio.sleep(60) # Every minute
 
     async def _greeks_loop(self):
-        """Fetches Greeks periodically."""
+        """Fetches Greeks periodically. (DEPRECATED: Using WebSocket streaming)"""
         while self.is_running:
             try:
                 if self.current_price > 0:
@@ -291,6 +503,7 @@ class MarketDataManager:
             "atm_strike": self.atm_strike,
             "pcr": self.latest_pcr,
             "vix": self.latest_vix,
+            "sentiment": self.latest_sentiment,
             "sentiment": self.latest_sentiment,
             "greeks": self.latest_greeks
         }

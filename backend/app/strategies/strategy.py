@@ -298,6 +298,8 @@ class StrategyEngine:
         if 'supertrend' not in df.columns:
             df['supertrend'], _, _ = self.calculate_supertrend(df)
             
+        # Calculate VWAP (for display only - not used as filter for Index instruments)
+        # Note: Nifty 50 index has no meaningful volume, so VWAP is informational only
         if 'vwap' not in df.columns:
             df['vwap'] = self.calculate_vwap(df)
 
@@ -348,9 +350,10 @@ class StrategyEngine:
         # 1. SUPERTREND FILTER (Always pass - it's checked in final decision)
         filter_checks['supertrend'] = True
         
-        # 2. PRICE vs VWAP FILTER (Price must be away from VWAP by at least 0.05%)
-        price_vwap_distance = abs((current_price - vwap) / vwap) * 100
-        filter_checks['price_vwap'] = price_vwap_distance > 0.05
+        # 2. PRICE vs VWAP FILTER (DISABLED for Index - no meaningful volume)
+        # Nifty 50 is an index, not a tradeable instrument, so volume = 0 or meaningless
+        # VWAP calculation requires volume to be accurate, so we disable this filter
+        filter_checks['price_vwap'] = True  # Always pass for index instruments
         
         # 3. RSI FILTER (Balanced thresholds: 55+ for bullish, 45- for bearish)
         bullish_rsi = rsi > 55

@@ -155,8 +155,14 @@ class DataFetcher:
             if not filtered.empty:
                 # Return the correct instrument_key format: NSE_FO|token (e.g., NSE_FO|65628)
                 key = filtered.iloc[0]['instrument_key']
-                print(f"   ✅ Found key: {key}")
-                return key
+                
+                # Ensure it's a string and has pipe separator
+                if isinstance(key, str) and '|' in key:
+                    print(f"   ✅ Found key: {key}")  
+                    return key
+                else:
+                    print(f"   ❌ Invalid key format: {key} (type: {type(key)})")
+                    return None
             else:
                 print(f"   ❌ Instrument not found for {symbol} {expiry} {strike} {option_type}")
                 # Show what's available for this expiry
@@ -483,34 +489,48 @@ class DataFetcher:
         T = self.greeks_calculator.time_to_expiry(expiry_date)
         
         # Get Instrument Keys for ATM CE and PE
+        self.logger.info(f"🔍 Finding option instruments for expiry={expiry_date}, strike={atm_strike}")
+        
         ce_key = self.get_option_instrument_key("NIFTY", expiry_date, atm_strike, "CE")
         pe_key = self.get_option_instrument_key("NIFTY", expiry_date, atm_strike, "PE")
         
         if not ce_key or not pe_key:
+            self.logger.error(f"❌ Could not find instrument keys")
+            self.logger.error(f"   CE Key: {ce_key}")
+            self.logger.error(f"   PE Key: {pe_key}")
+            self.logger.error(f"   Expiry: {expiry_date}, Strike: {atm_strike}")
             return None
+        
+        # Validate keys
+        if not self._is_valid_instrument_key(ce_key) or not self._is_valid_instrument_key(pe_key):
+            self.logger.error(f"❌ Invalid instrument key format!")
+            self.logger.error(f"   CE Key: {ce_key} (valid={self._is_valid_instrument_key(ce_key)})")
+            self.logger.error(f"   PE Key: {pe_key} (valid={self._is_valid_instrument_key(pe_key)})")
+            return None
+        
+        self.logger.info(f"✅ Found valid instrument keys:")
+        self.logger.info(f"   CE: {ce_key}")
+        self.logger.info(f"   PE: {pe_key}")
 
         # Fetch Market Prices
         quotes = self.get_quotes([ce_key, pe_key])
         
-        # If quotes fail (API error/2025 date), generate mock quotes
+        # If quotes fail, log error and return None (no mock data)
         if not quotes:
-            import random
-            quotes = {
-                ce_key: {'last_price': round(random.uniform(100, 300), 2)},
-                pe_key: {'last_price': round(random.uniform(100, 300), 2)}
-            }
-            self.logger.info(f"📊 Using mock option prices (quotes unavailable)")
+            self.logger.error(f"❌ Failed to fetch option quotes for strike {atm_strike}")
+            self.logger.error(f"   CE Key: {ce_key}")
+            self.logger.error(f"   PE Key: {pe_key}")
+            self.logger.error(f"   Check instrument key format and API authentication")
+            return None
 
         ce_price = quotes.get(ce_key, {}).get('last_price', 0)
         pe_price = quotes.get(pe_key, {}).get('last_price', 0)
 
-        # If prices are still 0, generate random prices as final fallback
-        if ce_price == 0:
-            import random
-            ce_price = round(random.uniform(100, 300), 2)
-        if pe_price == 0:
-            import random  
-            pe_price = round(random.uniform(100, 300), 2)
+        # If prices are 0, return None (don't use mock data)
+        if ce_price == 0 or pe_price == 0:
+            self.logger.error(f"❌ Option prices are zero: CE={ce_price}, PE={pe_price}")
+            self.logger.error(f"   API returned quotes but prices are invalid")
+            return None
 
         # Calculate IV
         ce_iv = self.greeks_calculator.implied_volatility(ce_price, spot_price, atm_strike, T, 'CE')

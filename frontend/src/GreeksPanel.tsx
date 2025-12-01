@@ -50,20 +50,22 @@ const GreeksPanel: React.FC<GreeksPanelProps> = ({ greeks }) => {
 
   return (
     <div className="space-y-3">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-purple-500/20 to-blue-500/20 border border-purple-500/30 rounded-lg p-3">
-        <div className="flex items-center gap-2 mb-2">
-          <Zap className="w-4 h-4 text-purple-400" />
-          <h2 className="text-sm font-bold text-purple-300">Option Greeks</h2>
+      {/* Header with Prominent Strike Info */}
+      <div className="bg-gradient-to-r from-purple-500/30 to-blue-500/30 border-2 border-purple-500/50 rounded-lg p-4 mb-3">
+        <div className="flex items-center gap-2 mb-3">
+          <Zap className="w-5 h-5 text-purple-400" />
+          <h2 className="text-base font-bold text-purple-300">Option Analysis</h2>
         </div>
-        <div className="grid grid-cols-2 gap-2 text-xs">
-          <div>
-            <span className="text-gray-400">ATM Strike</span>
-            <div className="font-bold text-white">₹{strike}</div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-black/20 rounded-lg p-3 border border-purple-500/30">
+            <span className="text-xs text-gray-400 uppercase tracking-wider block mb-1">ATM Strike</span>
+            <div className="text-2xl font-bold text-white font-mono">₹{strike}</div>
+            <span className="text-[10px] text-gray-500">At-The-Money</span>
           </div>
-          <div>
-            <span className="text-gray-400">Expiry</span>
-            <div className="font-bold text-white">{expiry}</div>
+          <div className="bg-black/20 rounded-lg p-3 border border-blue-500/30">
+            <span className="text-xs text-gray-400 uppercase tracking-wider block mb-1">Expiry</span>
+            <div className="text-xl font-bold text-white">{expiry}</div>
+            <span className="text-[10px] text-gray-500">Next Expiry</span>
           </div>
         </div>
       </div>
