@@ -1,0 +1,16 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "upstox-python-sdk",
+    "pandas==2.2.2",
+    "python-dotenv",
+    "requests",
+    "fastapi",
+    "uvicorn[standard]",
+    "scipy",
+    "websocket-client",
+]
