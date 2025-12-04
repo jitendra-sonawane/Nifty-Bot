@@ -1,0 +1,107 @@
+--- a/app/data/data_fetcher.py
++++ b/app/data/data_fetcher.py
+@@ -245,6 +245,8 @@ class DataFetcher:
+     def get_nifty_pcr(self, spot_price):
+         """
+         Calculates Put-Call Ratio using /market-quote/option-greek API.
++        
++        Logs detailed information about each step for debugging.
+         """
+         if self.instruments_df is None:
+             self.load_instruments()
+@@ -252,40 +254,60 @@ class DataFetcher:
+         if self.instruments_df is None or self.instruments_df.empty:
+             self.logger.error("Instruments not loaded, cannot calculate PCR.")
+             return None
+ 
+         try:
++            self.logger.info(f"📊 Starting PCR calculation for spot price: {spot_price}")
++            
+             # 1. Filter for Nifty Options
+             nifty_opts = self.instruments_df[
+                 (self.instruments_df['name'] == 'NIFTY') & 
+                 (self.instruments_df['instrument_type'] == 'OPTIDX')
+             ].copy()
+             
+             if nifty_opts.empty:
+                 self.logger.error("No Nifty options found in instruments master.")
+                 return None
++            
++            self.logger.info(f"✅ Found {len(nifty_opts)} Nifty options")
+ 
+             # 2. Find Nearest Expiry
+             if nifty_opts['expiry'].dtype == 'object':
+                 nifty_opts['expiry'] = pd.to_datetime(nifty_opts['expiry'])
+                 
+             today = datetime.now()
+             future_opts = nifty_opts[nifty_opts['expiry'] >= today]
+             
+             if future_opts.empty:
+                 self.logger.error("No future expiries found.")
+                 return None
+                 
+             nearest_expiry = future_opts['expiry'].min()
++            self.logger.info(f"📅 Nearest expiry: {nearest_expiry}")
+             
+             # 3. Filter for Strikes around Spot (+/- 500 points)
+             strike_range = 500
+             relevant_opts = future_opts[
+                 (future_opts['expiry'] == nearest_expiry) &
+                 (future_opts['strike'] >= spot_price - strike_range) &
+                 (future_opts['strike'] <= spot_price + strike_range)
+             ]
+             
+             if relevant_opts.empty:
+                 self.logger.error(f"No options found for expiry {nearest_expiry} around {spot_price}")
+                 return None
++            
++            self.logger.info(f"✅ Found {len(relevant_opts)} relevant options in strike range")
+                 
+             # 4. Get Instrument Keys
+             instrument_keys = relevant_opts['instrument_key'].tolist()
++            self.logger.info(f"🔑 Fetching data for {len(instrument_keys)} instrument keys")
+             
+             # 5. Fetch Greeks (includes OI)
+             greeks_data = self.get_option_greeks_batch(instrument_keys)
+             
+             if not greeks_data:
+                 self.logger.error(f"❌ Failed to fetch greeks for {len(instrument_keys)} instruments")
+                 return None
++            
++            self.logger.info(f"✅ Received greeks data for {len(greeks_data)} instruments")
+             
+             total_ce_oi = 0
+             total_pe_oi = 0
++            ce_count = 0
++            pe_count = 0
+             
+             # 6. Extract OI from Greeks response
+             for key, greek_info in greeks_data.items():
+                 opt_info = relevant_opts[relevant_opts['instrument_key'] == key]
+                 if not opt_info.empty:
+                     opt_type = opt_info.iloc[0]['option_type']
+                     oi = greek_info.get('oi', 0)
+                     
+                     if opt_type == 'CE':
+                         total_ce_oi += oi
++                        ce_count += 1
+                     elif opt_type == 'PE':
+                         total_pe_oi += oi
++                        pe_count += 1
++            
++            self.logger.info(f"📊 OI Aggregation: CE={ce_count} contracts (OI={total_ce_oi}), PE={pe_count} contracts (OI={total_pe_oi})")
+             
+             # 7. Calculate PCR
+             if total_ce_oi > 0:
+                 pcr = total_pe_oi / total_ce_oi
++                self.logger.info(f"✅ PCR Calculated: {pcr:.4f} (Put OI: {total_pe_oi}, Call OI: {total_ce_oi})")
+                 return round(pcr, 4)
+             else:
+                 self.logger.error(f"No Call OI found for PCR calculation")
+                 return None
+                 
+         except Exception as e:
+             self.logger.error(f"Error calculating PCR: {e}")
++            import traceback
++            self.logger.error(traceback.format_exc())
+             return None
