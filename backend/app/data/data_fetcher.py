@@ -276,7 +276,12 @@ class DataFetcher:
         pass
 
     def get_nifty_pcr(self, spot_price):
-        """Calculates Put-Call Ratio using /market-quote/option-greek API."""
+        """
+        Calculates Nifty PCR (Put-Call Ratio) using Option Chain.
+        
+        DEPRECATED: This method uses HTTP polling. Use MarketDataManager's WebSocket-based
+        PCR calculation for real-time data instead.
+        """
         self.logger.info(f"📊 [PCR] Starting: spot={spot_price}")
         if self.instruments_df is None:
             self.load_instruments()

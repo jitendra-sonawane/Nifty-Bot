@@ -457,6 +457,9 @@ export const apiSlice = createApi({
         getLoginUrl: builder.query<{ login_url: string }, void>({
             query: () => '/auth/login',
         }),
+        getUserProfile: builder.query<{ user_id: string; user_name: string; email: string }, void>({
+            query: () => '/user/profile',
+        }),
         startBot: builder.mutation<void, void>({
             query: () => ({
                 url: '/start',
@@ -519,6 +522,7 @@ export const {
     useStopBotMutation,
     useUpdateConfigMutation,
     useGetLoginUrlQuery,
+    useGetUserProfileQuery,
     useSetTradingModeMutation,
     useAddPaperFundsMutation,
     useClosePositionMutation,
@@ -526,3 +530,4 @@ export const {
     useStreamGreeksQuery,
     useStreamPCRQuery
 } = apiSlice;
+

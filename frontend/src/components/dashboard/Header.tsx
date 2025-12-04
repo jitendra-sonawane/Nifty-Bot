@@ -1,5 +1,6 @@
 import React from 'react';
-import { Wallet } from 'lucide-react';
+import { Wallet, User } from 'lucide-react';
+import { useGetUserProfileQuery } from '../../apiSlice';
 
 interface HeaderProps {
     status: any;
@@ -11,6 +12,11 @@ interface HeaderProps {
 }
 
 const Header: React.FC<HeaderProps> = ({ status, isAuthenticated, tokenStatus, time, handleModeToggle, handleAddFunds }) => {
+    // Fetch user profile only when authenticated
+    const { data: userProfile } = useGetUserProfileQuery(undefined, {
+        skip: !isAuthenticated, // Skip query if not authenticated
+    });
+
     return (
         <div className="rounded-lg p-3 flex justify-between items-center bg-gradient-to-r from-[#0f1724] via-[#1b1033] to-[#2b0650] shadow-lg border border-white/5">
             <div className="flex items-center gap-3">
@@ -21,6 +27,15 @@ const Header: React.FC<HeaderProps> = ({ status, isAuthenticated, tokenStatus, t
                 {isAuthenticated && tokenStatus?.remaining_seconds && tokenStatus.remaining_seconds < 3600 && tokenStatus.remaining_seconds > 0 && (
                     <div className="px-3 py-1 rounded-full text-xs font-bold bg-yellow-500/20 border border-yellow-500 text-yellow-400">
                         ⚠️ Token expires in {Math.floor(tokenStatus.remaining_seconds / 60)}m
+                    </div>
+                )}
+                {/* User Profile Welcome Message */}
+                {isAuthenticated && userProfile?.user_name && (
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-green-500/20 border border-green-500/30">
+                        <User size={14} className="text-green-400" />
+                        <span className="text-xs font-medium text-green-400">
+                            Welcome, {userProfile.user_name}
+                        </span>
                     </div>
                 )}
             </div>
@@ -44,3 +59,4 @@ const Header: React.FC<HeaderProps> = ({ status, isAuthenticated, tokenStatus, t
 };
 
 export default Header;
+

@@ -557,8 +557,8 @@ class MarketDataManager:
                         self.last_pcr_calculation = current_time
                         
                         # Get PCR analysis
-                        self.latest_pcr_analysis = self.pcr_calc.get_pcr_analysis(pcr, 1, 1)
-                        self.pcr_calc.record_pcr(pcr, 1, 1)
+                        self.latest_pcr_analysis = self.pcr_calc.get_pcr_analysis(pcr, total_ce_oi, total_pe_oi)
+                        self.pcr_calc.record_pcr(pcr, total_ce_oi, total_pe_oi)
                         
                         logger.info(f"📊 PCR Updated (WebSocket): {pcr:.4f} | CE OI: {total_ce_oi:,.0f} | PE OI: {total_pe_oi:,.0f} | Sentiment: {self.pcr_calc.get_sentiment(pcr)}")
                         logger.debug(f"   OI data points: {len(self.pcr_oi_data)}")
