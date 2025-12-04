@@ -23,11 +23,19 @@ except ImportError:
     logger = logging.getLogger(__name__)
 
 class DataFetcher:
+    # Upstox v3 API supports extended intervals
+    SUPPORTED_INTERVALS = [
+        '1minute', '5minute', '10minute', '15minute', '30minute', '60minute',
+        '1hour', '2hour', '3hour', '4hour', '5hour',
+        'day', 'week', 'month'
+    ]
+    
     def __init__(self, api_key, access_token):
         self.api_key = api_key
         self.access_token = access_token
         self.logger = logger
-        self.base_url = "https://api.upstox.com/v2"
+        self.base_url_v2 = "https://api.upstox.com/v2"
+        self.base_url_v3 = "https://api.upstox.com/v3"
         
         # Configure SDK client
         configuration = upstox_client.Configuration()
@@ -36,6 +44,8 @@ class DataFetcher:
         self.api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration))
         self.instruments_df = None
         self.greeks_calculator = GreeksCalculator()
+        
+
 
     def set_access_token(self, token):
         self.access_token = token
@@ -181,62 +191,83 @@ class DataFetcher:
 
     def get_historical_data(self, instrument_key, interval, from_date, to_date):
         """
-        Fetches historical candle data.
-        interval: '1minute', '5minute', '30minute', 'day', etc.
+        Fetches historical candle data using Upstox v3 API.
+        interval: '1minute', '5minute', '10minute', '15minute', '30minute', '60minute',
+                  '1hour', '2hour', '3hour', '4hour', '5hour',
+                  'day', 'week', 'month'
+        from_date: 'YYYY-MM-DD' format
+        to_date: 'YYYY-MM-DD' format
         """
         try:
-            print(f"📊 Fetching historical data for {instrument_key} from {from_date} to {to_date}...")
+            if interval not in self.SUPPORTED_INTERVALS:
+                self.logger.error(f"❌ Unsupported interval: {interval}")
+                self.logger.error(f"   Supported intervals: {self.SUPPORTED_INTERVALS}")
+                return None
             
-            # Build URL with proper URL encoding for instrument key
+            try:
+                if isinstance(from_date, str):
+                    from_date_obj = datetime.strptime(from_date, "%d-%m-%Y") if "-" in from_date and len(from_date.split("-")[0]) == 2 else datetime.strptime(from_date, "%Y-%m-%d")
+                    from_date = from_date_obj.strftime("%Y-%m-%d")
+                if isinstance(to_date, str):
+                    to_date_obj = datetime.strptime(to_date, "%d-%m-%Y") if "-" in to_date and len(to_date.split("-")[0]) == 2 else datetime.strptime(to_date, "%Y-%m-%d")
+                    to_date = to_date_obj.strftime("%Y-%m-%d")
+            except Exception as e:
+                self.logger.error(f"❌ Invalid date format: {e}")
+                return None
+            
+            self.logger.info(f"📊 Fetching v3 historical data: {instrument_key} | {interval} | {from_date} to {to_date}")
+            
+            # Parse interval to extract unit and interval value
+            # Format: '5minute' -> unit='minutes', interval_value='5'
+            # Format: 'day' -> unit='days', interval_value='1'
+            # Note: Upstox v3 API expects PLURAL units: minutes, hours, days, weeks, months
+            if interval in ['day', 'week', 'month']:
+                unit = interval + 's'  # Convert to plural: day -> days
+                interval_value = '1'
+            elif interval.endswith('minute'):
+                unit = 'minutes'
+                interval_value = interval.replace('minute', '')
+            elif interval.endswith('hour'):
+                unit = 'hours'
+                interval_value = interval.replace('hour', '')
+            else:
+                self.logger.error(f"❌ Unable to parse interval format: {interval}")
+                return None
+            
             encoded_key = urllib.parse.quote(instrument_key)
-            url = f"{self.base_url}/historical-candle/{encoded_key}/{interval}/{to_date}/{from_date}"
-            print(f"🔗 API URL: {url}")
-            print(f"🔐 Access Token present: {bool(self.access_token)}")
+            url = f"{self.base_url_v3}/historical-candle/{encoded_key}/{unit}/{interval_value}/{to_date}/{from_date}"
             
             headers = {
                 'Accept': 'application/json',
                 'Authorization': f'Bearer {self.access_token}'
             }
             
-            print(f"📤 Sending request...")
             response = requests.get(url, headers=headers, timeout=30)
-            
-            print(f"📥 Response status: {response.status_code}")
-            print(f"📋 Response headers: {dict(response.headers)}")
             
             if response.status_code == 200:
                 data = response.json()
-                print(f"✅ Response JSON received: {str(data)[:500]}")
-                
                 if 'data' in data and 'candles' in data['data']:
                     candles = data['data']['candles']
-                    print(f"✅ Found {len(candles)} candles in response")
-                    # Candles are usually [timestamp, open, high, low, close, volume, oi]
+                    self.logger.info(f"✅ Found {len(candles)} candles")
                     df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
                     df['timestamp'] = pd.to_datetime(df['timestamp'])
-                    df = df.set_index('timestamp')  # Set timestamp as index
-                    df = df.sort_index()  # Sort by index
-                    print(f"✅ Loaded {len(df)} candles into DataFrame")
-                    print(f"   First timestamp: {df.index[0]}, Last timestamp: {df.index[-1]}")
+                    df = df.set_index('timestamp')
+                    df = df.sort_index()
                     return df
                 else:
-                    print(f"⚠️  Response format unexpected. Keys: {data.keys() if isinstance(data, dict) else 'N/A'}")
-                    print(f"📄 Full response: {str(data)[:1000]}")
+                    self.logger.error(f"⚠️ Unexpected response format: {data.keys() if isinstance(data, dict) else 'N/A'}")
                     return None
             else:
-                print(f"❌ Error fetching data: {response.status_code}")
-                print(f"📄 Response body: {response.text[:500]}")
+                self.logger.error(f"❌ Error {response.status_code}: {response.text[:500]}")
                 return None
         except requests.Timeout:
-            print(f"⏱️  Request timeout: Historical data fetch took too long (30s)")
+            self.logger.error(f"⏱️ Request timeout (30s)")
             return None
         except requests.ConnectionError as e:
-            print(f"🔌 Connection error: {e}")
+            self.logger.error(f"🔌 Connection error: {e}")
             return None
         except Exception as e:
-            print(f"❌ Exception in get_historical_data: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+            self.logger.error(f"❌ Exception: {type(e).__name__}: {e}")
             return None
 
     def get_option_chain(self, instrument_key, expiry_date):
@@ -245,94 +276,73 @@ class DataFetcher:
         pass
 
     def get_nifty_pcr(self, spot_price):
-        """
-        Calculates Put-Call Ratio (PCR) for Nifty 50 based on nearest expiry and strikes around spot.
-        """
+        """Calculates Put-Call Ratio using /market-quote/option-greek API."""
+        self.logger.info(f"📊 [PCR] Starting: spot={spot_price}")
         if self.instruments_df is None:
             self.load_instruments()
-            
         if self.instruments_df is None or self.instruments_df.empty:
-            print("Instruments not loaded, cannot calculate PCR.")
+            self.logger.error("❌ [PCR] Instruments not loaded")
             return None
-
         try:
-            # 1. Filter for Nifty Options
-            nifty_opts = self.instruments_df[
-                (self.instruments_df['name'] == 'NIFTY') & 
-                (self.instruments_df['instrument_type'] == 'OPTIDX')
-            ].copy()
-            
+            self.logger.info(f"📊 [PCR] Starting: spot={spot_price}")
+            nifty_opts = self.instruments_df[(self.instruments_df['name'] == 'NIFTY') & (self.instruments_df['instrument_type'] == 'OPTIDX')].copy()
             if nifty_opts.empty:
-                print("No Nifty options found in instruments master.")
+                self.logger.error("❌ [PCR] No Nifty options")
                 return None
-
-            # 2. Find Nearest Expiry
-            # Convert expiry column to datetime if not already
             if nifty_opts['expiry'].dtype == 'object':
                 nifty_opts['expiry'] = pd.to_datetime(nifty_opts['expiry'])
-                
             today = datetime.now()
-            # Filter for future expiries
             future_opts = nifty_opts[nifty_opts['expiry'] >= today]
-            
             if future_opts.empty:
-                print("No future expiries found.")
+                self.logger.error("❌ [PCR] No future expiries")
                 return None
-                
-            # Get the nearest expiry date
             nearest_expiry = future_opts['expiry'].min()
-            
-            # 3. Filter for Strikes around Spot (+/- 500 points)
+            self.logger.info(f"📅 [PCR] Expiry: {nearest_expiry}")
             strike_range = 500
-            relevant_opts = future_opts[
-                (future_opts['expiry'] == nearest_expiry) &
-                (future_opts['strike'] >= spot_price - strike_range) &
-                (future_opts['strike'] <= spot_price + strike_range)
-            ]
-            
+            relevant_opts = future_opts[(future_opts['expiry'] == nearest_expiry) & (future_opts['strike'] >= spot_price - strike_range) & (future_opts['strike'] <= spot_price + strike_range)]
             if relevant_opts.empty:
-                print(f"No options found for expiry {nearest_expiry} around {spot_price}")
+                self.logger.error(f"❌ [PCR] No options in range")
                 return None
-                
-            # 4. Get Instrument Keys - use the correct format from CSV (NSE_FO|token)
+            self.logger.info(f"✅ [PCR] Found {len(relevant_opts)} options")
             instrument_keys = relevant_opts['instrument_key'].tolist()
-            
-            # 5. Fetch Quotes (OI)
-            # Upstox allows fetching multiple quotes. Max limit usually exists (e.g., 100).
-            # We might have ~20 strikes * 2 types = 40 keys. Should be fine.
-            
-            # 5. Fetch Quotes (OI)
-            quotes = self.get_quotes(instrument_keys)
+            greeks_data = self.get_option_greeks_batch(instrument_keys)
+            self.logger.info(f" instrument_keys: {instrument_keys[:5]}... (total {len(instrument_keys)})")
+            if not greeks_data:
+                self.logger.error(f"❌ [PCR] No greeks data")
+                return None
+            self.logger.info(f"✅ [PCR] Got {len(greeks_data)} greeks")
             
             total_ce_oi = 0
             total_pe_oi = 0
-            
-            for key, quote in quotes.items():
-                    
-                    for key, quote in quotes.items():
-                        # Find option type from our dataframe
-                        opt_info = relevant_opts[relevant_opts['instrument_key'] == key]
-                        if not opt_info.empty:
-                            opt_type = opt_info.iloc[0]['option_type']
-                            oi = quote.get('oi', 0)
-                            
-                            if opt_type == 'CE':
-                                total_ce_oi += oi
-                            elif opt_type == 'PE':
-                                total_pe_oi += oi
-                                
-                    if total_ce_oi > 0:
-                        pcr = total_pe_oi / total_ce_oi
-                        return round(pcr, 2)
-                    else:
-                        return 0
-                
+            for key, greek_info in greeks_data.items():
+                # Extract trading symbol from API key: NSE_FO:NIFTY25D0926050CE -> NIFTY25D0926050CE
+                parts = key.split(':')
+                if len(parts) == 2:
+                    trading_symbol = parts[1]
+                    opt_info = relevant_opts[relevant_opts['tradingsymbol'] == trading_symbol]
+                    if not opt_info.empty:
+                        opt_type = opt_info.iloc[0]['option_type']
+                        oi = greek_info.get('oi', 0) or greek_info.get('open_interest', 0)
+                        if oi == 0 and 'ohlc' in greek_info:
+                            oi = greek_info['ohlc'].get('oi', 0) or greek_info['ohlc'].get('open_interest', 0)
+                        if opt_type == 'CE':
+                            total_ce_oi += oi
+                        elif opt_type == 'PE':
+                            total_pe_oi += oi
+            self.logger.info(f"📊 [PCR] OI: CE={total_ce_oi}, PE={total_pe_oi}")
+            if total_ce_oi > 0:
+                pcr = total_pe_oi / total_ce_oi
+                self.logger.info(f"✅ [PCR] Result: {pcr:.4f}")
+                return round(pcr, 4)
+            else:
+                self.logger.error(f"❌ [PCR] No CE OI")
+                return None
         except Exception as e:
-            print(f"Error calculating PCR: {e}")
+            self.logger.error(f"❌ [PCR] Error: {e}")
             return None
 
     def get_current_price(self, instrument_key):
-        url = f"{self.base_url}/market-quote/ltp"
+        url = f"{self.base_url_v2}/market-quote/ltp"
         headers = {
             'Accept': 'application/json',
             'Authorization': f'Bearer {self.access_token}'
@@ -366,7 +376,6 @@ class DataFetcher:
         else:
             print(f"Error fetching price: {response.status_code} - {response.text}")
         return None
-        return None
 
     def get_india_vix(self):
         """Fetches the current value of India VIX."""
@@ -397,17 +406,13 @@ class DataFetcher:
         if not instrument_keys:
             return {}
             
-        # Validate all instrument keys before making API call
         invalid_keys = [key for key in instrument_keys if not self._is_valid_instrument_key(key)]
         if invalid_keys:
             self.logger.error(f"❌ Invalid instrument keys found: {invalid_keys}. Expected format: NSE_FO|xxxxx")
             self.logger.error(f"Please ensure instrument_keys are in Upstox format (e.g., NSE_FO|52910)")
             return {}
         
-        # Split keys into chunks of 100 if needed (Upstox limit)
-        # For now assuming < 100 keys
-        
-        url = f"{self.base_url}/market-quote/quotes"
+        url = f"{self.base_url_v2}/market-quote/quotes"
         headers = {
             'Accept': 'application/json',
             'Authorization': f'Bearer {self.access_token}'
@@ -420,13 +425,14 @@ class DataFetcher:
         
         try:
             self.logger.info(f"🔍 Fetching quotes for {len(instrument_keys)} keys: {symbol_info_str}")
-            response = requests.get(url, headers=headers, params=params)
+            response = requests.get(url, headers=headers, params=params, timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 if 'data' in data:
                     return data['data']
                 else:
                     self.logger.error(f"❌ Error fetching quotes (no data): {data} | Keys: {symbol_info_str}")
+
             else:
                 self.logger.error(f"❌ Error fetching quotes: {response.status_code} - {response.text} | Keys: {symbol_info_str}")
         except Exception as e:
@@ -474,6 +480,56 @@ class DataFetcher:
 
     def get_atm_strike(self, spot_price, step=50):
         return round(spot_price / step) * step
+    
+    def get_available_strikes(self, symbol, expiry_date):
+        """Get all available strikes for a symbol and expiry."""
+        if self.instruments_df is None:
+            self.load_instruments()
+            
+        if isinstance(expiry_date, str):
+            expiry_date = pd.to_datetime(expiry_date)
+            
+        filtered = self.instruments_df[
+            (self.instruments_df['name'] == symbol) & 
+            (self.instruments_df['instrument_type'] == 'OPTIDX') &
+            (self.instruments_df['expiry'] == expiry_date)
+        ]
+        
+        if not filtered.empty:
+            return sorted(filtered['strike'].unique())
+        return []
+
+    def get_option_greeks_batch(self, instrument_keys):
+        """Fetch Greeks data for multiple instruments (includes OI)."""
+        if not instrument_keys:
+            return {}
+        url = "https://api.upstox.com/v3/market-quote/option-greek"
+        headers = {'Accept': 'application/json', 'Authorization': f'Bearer {self.access_token}'}
+        params = {'instrument_key': ','.join(instrument_keys)}
+        try:
+            self.logger.info(f"🔍 [GREEKS] Fetching {len(instrument_keys)}")
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            self.logger.info(f"📥 [GREEKS] Status: {response.status_code}")
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data:
+                    self.logger.info(f"✅ [GREEKS] Got {len(data['data'])}")
+                    if data['data']:
+                        first_key = list(data['data'].keys())[0]
+                        first_item = data['data'][first_key]
+                        self.logger.info(f"🔍 [GREEKS] Response keys: {list(first_item.keys())}")
+                        if 'oi' in first_item:
+                            self.logger.info(f"🔍 [GREEKS] OI at top: {first_item.get('oi')}")
+                        if 'ohlc' in first_item:
+                            self.logger.info(f"🔍 [GREEKS] OHLC keys: {list(first_item['ohlc'].keys())}")
+                    return data['data']
+            elif response.status_code == 429:
+                self.logger.warning(f"⚠️ [GREEKS] Rate limited")
+            else:
+                self.logger.error(f"❌ [GREEKS] Error {response.status_code}")
+        except Exception as e:
+            self.logger.error(f"❌ [GREEKS] Exception: {e}")
+        return {}
 
     def get_option_greeks(self, spot_price, expiry_date=None):
         """

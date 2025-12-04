@@ -177,17 +177,17 @@ class TradingBot:
         market_state = self.market_data.get_market_state() if self.market_data else {}
         strategy_data = self.strategy_runner.latest_strategy_data if self.strategy_runner else {}
         
-        # Calculate unrealized PnL
+        # Calculate unrealized PnL from paper trading manager
         unrealized_pnl = 0.0
-        if self.position_manager and self.market_data:
+        if self.order_manager and self.order_manager.paper_manager:
             current_prices = {}
-            positions = self.position_manager.get_positions()
+            positions = self.order_manager.paper_manager.get_positions()
             if positions:
                 keys = [p['instrument_key'] for p in positions]
                 quotes = self.data_fetcher.get_quotes(keys) if self.data_fetcher else {}
                 for key, quote in quotes.items():
                     current_prices[key] = quote.get('last_price', 0)
-            unrealized_pnl = self.position_manager.calculate_unrealized_pnl(current_prices)
+            unrealized_pnl = self.order_manager.paper_manager.get_pnl(current_prices)
         
         # Get Greeks from market_state or strategy_data
         greeks_data = market_state.get("greeks") or strategy_data.get("greeks")
@@ -197,6 +197,8 @@ class TradingBot:
             "signal": self.strategy_runner.latest_signal if self.strategy_runner else "WAITING",
             "rsi": strategy_data.get("rsi", 0),
             "ema_50": strategy_data.get("ema_50", 0),
+            "ema_5": strategy_data.get("ema_5", 0),
+            "ema_20": strategy_data.get("ema_20", 0),
             "macd": strategy_data.get("macd", 0),
             "macd_signal": strategy_data.get("macd_signal", 0),
             "supertrend": strategy_data.get("supertrend", "N/A"),
@@ -222,7 +224,7 @@ class TradingBot:
             "trade_history": self.trade_executor.trade_history[-10:] if self.trade_executor else [],
             "paper_balance": self.order_manager.paper_manager.get_balance() if self.order_manager else 0,
             "paper_pnl": unrealized_pnl,
-            "paper_daily_pnl": 0.0,  # TODO: Implement daily PnL tracking
+            "paper_daily_pnl": self.order_manager.paper_manager.get_daily_realized_pnl() if self.order_manager else 0.0,
             "market_state": market_state,
             "strategy_data": complete_strategy_data,
             "reasoning": self.strategy_runner.latest_reasoning if self.strategy_runner else {},
@@ -230,6 +232,9 @@ class TradingBot:
             "target_contract": self.strategy_runner.target_contract if self.strategy_runner else None,
             "trading_mode": self.order_manager.trading_mode if self.order_manager else "PAPER",
             "sentiment": market_state.get("sentiment", {}),
+            "pcr": market_state.get("pcr"),
+            "pcr_analysis": market_state.get("pcr_analysis"),
+            "vix": market_state.get("vix"),
             "config": {
                 "timeframe": self.timeframe,
                 "symbol": self.nifty_key,

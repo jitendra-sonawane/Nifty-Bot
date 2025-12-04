@@ -9,6 +9,8 @@ interface FilterStatusProps {
     vwap?: number;
     currentPrice?: number;
     supertrend?: string;
+    ema5?: number;
+    ema20?: number;
 }
 
 const FilterStatusPanel: React.FC<FilterStatusProps> = ({
@@ -18,17 +20,22 @@ const FilterStatusPanel: React.FC<FilterStatusProps> = ({
     atrPct = 0,
     vwap = 0,
     currentPrice = 0,
-    supertrend = ''
+    supertrend = '',
+    ema5 = 0,
+    ema20 = 0
 }) => {
     // Ensure filters is an object with default values
     const safeFilters = filters || {};
-    
+
     // Ensure numeric values have defaults to prevent .toFixed() errors
     const safeRsi = typeof rsi === 'number' ? rsi : 0;
     const safeVolumeRatio = typeof volumeRatio === 'number' ? volumeRatio : 0;
     const safeAtrPct = typeof atrPct === 'number' ? atrPct : 0;
     const safeVwap = typeof vwap === 'number' ? vwap : 0;
     const safeCurrentPrice = typeof currentPrice === 'number' ? currentPrice : 0;
+    const safeEma5 = typeof ema5 === 'number' ? ema5 : 0;
+    const safeEma20 = typeof ema20 === 'number' ? ema20 : 0;
+
     const getStatusIcon = (passed: boolean) => {
         return passed ? (
             <CheckCircle size={16} className="text-green-400" />
@@ -52,6 +59,27 @@ const FilterStatusPanel: React.FC<FilterStatusProps> = ({
             <div className="flex items-center gap-2 mb-3">
                 <Gauge size={16} className="text-cyan-400" />
                 <h3 className="text-sm font-semibold text-white uppercase">Live Filter Metrics</h3>
+            </div>
+
+            {/* EMA Crossover Filter */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.ema_crossover || false)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.ema_crossover || false)}
+                        <span className="text-xs font-medium text-white">EMA Crossover</span>
+                    </div>
+                    <div className="text-right">
+                        <span className={`text-sm font-bold ${safeFilters.ema_crossover ? 'text-green-400' : 'text-gray-400'}`}>
+                            {safeFilters.ema_crossover ? 'ALIGNED' : 'NEUTRAL'}
+                        </span>
+                        <div className="text-[10px] text-gray-400 font-mono">
+                            {safeEma5.toFixed(0)} / {safeEma20.toFixed(0)}
+                        </div>
+                    </div>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    Target: EMA5 &gt; EMA20 (bullish) or &lt; (bearish)
+                </div>
             </div>
 
             {/* RSI Filter */}

@@ -297,6 +297,12 @@ class StrategyEngine:
         
         if 'supertrend' not in df.columns:
             df['supertrend'], _, _ = self.calculate_supertrend(df)
+        
+        # Calculate EMA for trend confirmation
+        if 'ema_5' not in df.columns:
+            df['ema_5'] = self.calculate_ema(close, 5)
+        if 'ema_20' not in df.columns:
+            df['ema_20'] = self.calculate_ema(close, 20)
             
         # Calculate VWAP (for display only - not used as filter for Index instruments)
         # Note: Nifty 50 index has no meaningful volume, so VWAP is informational only
@@ -307,6 +313,8 @@ class StrategyEngine:
         current_price = close.iloc[-1]
         rsi = df['rsi'].iloc[-1]
         supertrend = df['supertrend'].iloc[-1]  # True = Bullish, False = Bearish
+        ema_5 = df['ema_5'].iloc[-1]
+        ema_20 = df['ema_20'].iloc[-1]
         vwap = df['vwap'].iloc[-1]
         
         # NEW: Volume and Volatility Filters
@@ -322,10 +330,9 @@ class StrategyEngine:
         if pd.isna(current_atr):
             current_atr = 0.0
         
-        # NEW: Entry confirmation - check last 3 candles for consistency
-        last_3_supertrend = df['supertrend'].iloc[-3:].values
-        last_3_rsi = df['rsi'].iloc[-3:].values
-        supertrend_confirmed = (last_3_supertrend[-1] == last_3_supertrend[-2]) or (last_3_supertrend[-2] == last_3_supertrend[-3])
+        # NEW: Entry confirmation - check last 2 candles for consistency
+        last_2_supertrend = df['supertrend'].iloc[-2:].values
+        supertrend_confirmed = (last_2_supertrend[-1] == last_2_supertrend[-2])
         
         # NEW: Trend strength
         trend_strength = self.get_supertrend_strength(df)
@@ -338,6 +345,7 @@ class StrategyEngine:
         signal = "HOLD"
         filter_checks = {
             'supertrend': False,
+            'ema_crossover': False,
             'price_vwap': False,
             'rsi': False,
             'volume': False,
@@ -350,31 +358,54 @@ class StrategyEngine:
         # 1. SUPERTREND FILTER (Always pass - it's checked in final decision)
         filter_checks['supertrend'] = True
         
-        # 2. PRICE vs VWAP FILTER (DISABLED for Index - no meaningful volume)
+        # 2. EMA CROSSOVER FILTER (Detect crossover event, not just state)
+        ema_bullish = False
+        ema_bearish = False
+        
+        if len(df) >= 2:
+            prev_ema_5 = df['ema_5'].iloc[-2]
+            prev_ema_20 = df['ema_20'].iloc[-2]
+            # Check if values are valid (not NaN)
+            if pd.notna(prev_ema_5) and pd.notna(prev_ema_20) and pd.notna(ema_5) and pd.notna(ema_20):
+                # Crossover: previous was below/above, now above/below
+                ema_bullish = (prev_ema_5 <= prev_ema_20) and (ema_5 > ema_20)
+                ema_bearish = (prev_ema_5 >= prev_ema_20) and (ema_5 < ema_20)
+            else:
+                # If any value is NaN, just check current state
+                ema_bullish = ema_5 > ema_20
+                ema_bearish = ema_5 < ema_20
+        else:
+            # Fallback for insufficient data - just check state
+            ema_bullish = ema_5 > ema_20
+            ema_bearish = ema_5 < ema_20
+        
+        filter_checks['ema_crossover'] = ema_bullish or ema_bearish
+        
+        # 3. PRICE vs VWAP FILTER (DISABLED for Index - no meaningful volume)
         # Nifty 50 is an index, not a tradeable instrument, so volume = 0 or meaningless
         # VWAP calculation requires volume to be accurate, so we disable this filter
         filter_checks['price_vwap'] = True  # Always pass for index instruments
         
-        # 3. RSI FILTER (Balanced thresholds: 55+ for bullish, 45- for bearish)
-        bullish_rsi = rsi > 55
-        bearish_rsi = rsi < 45
+        # 4. RSI FILTER (Thresholds: 50+ for bullish, 50- for bearish)
+        bullish_rsi = rsi >= 50
+        bearish_rsi = rsi <= 50
         filter_checks['rsi'] = bullish_rsi or bearish_rsi
         
-        # 4. VOLUME FILTER (DISABLED for Index - no meaningful volume)
+        # 5. VOLUME FILTER (DISABLED for Index - no meaningful volume)
         # Nifty 50 is an index, not a tradeable instrument, so volume = 0 or meaningless
         filter_checks['volume'] = True  # Always pass
         
-        # 5. VOLATILITY FILTER (ATR must be reasonable - not too high, not too low)
+        # 6. VOLATILITY FILTER (ATR must be reasonable - not too high, not too low)
         # Skip signals if ATR is extreme (choppy or overly volatile)
         atr_range = current_atr / current_price * 100
         volatility_ok = 0.01 < atr_range < 2.5  # Between 0.01% and 2.5%
         filter_checks['volatility'] = volatility_ok
         
-        # 6. ENTRY CONFIRMATION (Last 2 candles confirm direction)
+        # 7. ENTRY CONFIRMATION (Last 2 candles confirm direction)
         entry_confirmed = supertrend_confirmed
         filter_checks['entry_confirmation'] = entry_confirmed
         
-        # 7. PCR FILTER (Skip in backtest mode)
+        # 8. PCR FILTER (Skip in backtest mode)
         pcr_bullish = True
         pcr_bearish = True
         
@@ -385,28 +416,19 @@ class StrategyEngine:
         else:
             filter_checks['pcr'] = True
         
-        # 8. GREEKS FILTER (Skip in backtest mode)
+        # 9. GREEKS FILTER (Check Greeks quality)
         greeks_bullish = True
         greeks_bearish = True
         
         if not backtest_mode and greeks:
-            # Skip Greeks filter if prices are 0 (API failure)
-            ce_price = greeks.get('ce', {}).get('price', 0)
-            pe_price = greeks.get('pe', {}).get('price', 0)
+            ce_quality = greeks.get('ce', {}).get('quality_score', 0)
+            pe_quality = greeks.get('pe', {}).get('quality_score', 0)
             
-            if ce_price > 0 and pe_price > 0:
-                # Delta Filter: CE needs delta > 0.3 for bullish, PE needs delta < -0.3 for bearish
-                greeks_bullish = greeks['ce']['delta'] > 0.3
-                greeks_bearish = greeks['pe']['delta'] < -0.3
-                
-                # Theta Filter: Avoid extreme time decay (< -100 is too much)
-                greeks_bullish = greeks_bullish and greeks['ce'].get('theta', 0) > -100
-                greeks_bearish = greeks_bearish and greeks['pe'].get('theta', 0) > -100
-                
-                filter_checks['greeks'] = greeks_bullish or greeks_bearish
-            else:
-                # If prices are 0, skip Greeks filter (treat as passed)
-                filter_checks['greeks'] = True
+            # Require minimum quality score of 50 (Fair or better)
+            greeks_bullish = ce_quality >= 50
+            greeks_bearish = pe_quality >= 50
+            
+            filter_checks['greeks'] = greeks_bullish or greeks_bearish
         else:
             filter_checks['greeks'] = True
 
@@ -414,20 +436,20 @@ class StrategyEngine:
         decision_reason = "HOLD"
         
         # BUY_CE: All bullish filters must be true
-        if (supertrend and bullish_rsi and filter_checks['price_vwap'] and 
+        if (supertrend and bullish_rsi and (ema_bullish or ema_5 > ema_20) and filter_checks['price_vwap'] and 
             filter_checks['volume'] and filter_checks['volatility'] and 
             entry_confirmed and pcr_bullish and greeks_bullish):
             signal = "BUY_CE"
-            decision_reason = (f"🟢 BUY_CE SETUP: Supertrend↑ RSI({rsi:.1f})>65 "
-                             f"Price>{vwap:.2f}(VWAP) Vol✓ ATR✓ Confirmed")
+            decision_reason = (f"🟢 BUY_CE SETUP: Supertrend↑ EMA↑Crossover({ema_5:.0f}>{ema_20:.0f}) "
+                             f"RSI({rsi:.1f})≥50 Vol✓ ATR✓ Confirmed")
         
         # BUY_PE: All bearish filters must be true
-        elif (not supertrend and bearish_rsi and filter_checks['price_vwap'] and 
+        elif (not supertrend and bearish_rsi and (ema_bearish or ema_5 < ema_20) and filter_checks['price_vwap'] and 
               filter_checks['volume'] and filter_checks['volatility'] and 
               entry_confirmed and pcr_bearish and greeks_bearish):
             signal = "BUY_PE"
-            decision_reason = (f"🔴 BUY_PE SETUP: Supertrend↓ RSI({rsi:.1f})<35 "
-                             f"Price<{vwap:.2f}(VWAP) Vol✓ ATR✓ Confirmed")
+            decision_reason = (f"🔴 BUY_PE SETUP: Supertrend↓ EMA↓Crossover({ema_5:.0f}<{ema_20:.0f}) "
+                             f"RSI({rsi:.1f})≤50 Vol✓ ATR✓ Confirmed")
         
         else:
             # Detailed HOLD reason
@@ -435,15 +457,15 @@ class StrategyEngine:
             if not supertrend: reasons.append("ST↓")
             else: reasons.append("ST↑")
             
-            if rsi > 55: reasons.append(f"RSI{rsi:.0f}")
+            if rsi >= 50: reasons.append(f"RSI{rsi:.0f}")
             else: reasons.append(f"RSI{rsi:.0f}")
             
+            if not (ema_bullish or ema_bearish): reasons.append(f"EMA✗")
             if not filter_checks['price_vwap']: reasons.append("Price≈VWAP")
             if not filter_checks['volume']: reasons.append("Vol↓")
             if not filter_checks['volatility']: reasons.append("ATR✗")
             if not entry_confirmed: reasons.append("NoConfirm")
             if not (pcr_bullish or pcr_bearish): reasons.append(f"PCR({pcr:.2f})")
-            if not (greeks_bullish or greeks_bearish): reasons.append("Greeks✗")
             
             decision_reason = f"HOLD: {' '.join(reasons)}"
 
@@ -467,6 +489,8 @@ class StrategyEngine:
             "reason": decision_reason,
             "rsi": sanitize(round(rsi, 2)),
             "supertrend": "BULLISH" if supertrend else "BEARISH",
+            "ema_5": sanitize(round(ema_5, 2)),
+            "ema_20": sanitize(round(ema_20, 2)),
             "vwap": vwap_safe,
             "pcr": sanitize(pcr) if pcr is not None else None,
             "greeks": greeks,

@@ -8,6 +8,8 @@ interface IndicatorPanelProps {
 const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ strategyData, currentPrice }) => {
     const rsi = strategyData?.rsi || 0;
     const supertrend = strategyData?.supertrend || "WAITING";
+    const ema5 = strategyData?.ema_5 || 0;
+    const ema20 = strategyData?.ema_20 || 0;
     const vwap = strategyData?.vwap || 0;
     const greeks = strategyData?.greeks;
 
@@ -31,6 +33,17 @@ const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ strategyData, currentPr
                     {supertrend}
                 </div>
                 <div className="text-[10px] text-gray-500">Trend Direction</div>
+            </div>
+
+            {/* EMA Crossover */}
+            <div className="bg-white/5 p-3 rounded-lg border border-white/10">
+                <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">EMA (5/20)</div>
+                <div className={`text-lg font-mono font-bold ${ema5 > ema20 ? 'text-green-400' : 'text-red-400'}`}>
+                    {ema5.toFixed(0)} / {ema20.toFixed(0)}
+                </div>
+                <div className="text-[10px] text-gray-500">
+                    {ema5 > ema20 ? '↑ Bullish' : '↓ Bearish'}
+                </div>
             </div>
 
             {/* VWAP */}

@@ -8,6 +8,7 @@ import GreeksPanel from './GreeksPanel';
 import ReasoningCard from './ReasoningCard';
 import FilterStatusPanel from './FilterStatusPanel';
 import SentimentPanel from './SentimentPanel';
+import PCRSentimentCard from './components/PCRSentimentCard';
 import { useGetStatusQuery, useStreamGreeksQuery, useStartBotMutation, useStopBotMutation, useSetTradingModeMutation, useAddPaperFundsMutation, useClosePositionMutation } from './apiSlice';
 import { Activity } from 'lucide-react';
 
@@ -40,11 +41,15 @@ const Dashboard: React.FC = () => {
                 setMergedGreeksData(wsData);
             }
         }
-        // Fallback to HTTP status data
+        // Prioritize market_state.greeks (real-time)
+        else if (status?.market_state?.greeks) {
+            setMergedGreeksData(status.market_state.greeks);
+        }
+        // Fallback to strategy_data.greeks
         else if (status?.strategy_data?.greeks) {
             setMergedGreeksData(status.strategy_data.greeks);
         }
-    }, [greeksStreamData, status?.strategy_data?.greeks]);
+    }, [greeksStreamData, status?.market_state?.greeks, status?.strategy_data?.greeks]);
 
     useEffect(() => {
         const handler = (event: MessageEvent) => {
@@ -192,12 +197,19 @@ const Dashboard: React.FC = () => {
                     {/* Indicator Grid */}
                     <IndicatorPanel strategyData={strategyData} currentPrice={currentPrice} />
 
+                    {/* PCR Sentiment Card */}
+                    <PCRSentimentCard
+                        pcrAnalysis={status?.pcr_analysis || status?.market_state?.pcr_analysis}
+                        sentiment={status?.sentiment}
+                    />
+
                     {/* Support/Resistance */}
                     <div className="card p-4 rounded-xl bg-[#151925] border border-white/5 shadow-lg max-h-[400px] overflow-y-auto">
                         <h2 className="text-sm font-medium mb-3 text-white">Support & Resistance</h2>
                         <SupportResistance
                             supportResistance={strategyData?.support_resistance}
                             breakout={strategyData?.breakout}
+                            currentPrice={currentPrice}
                         />
                     </div>
                 </Column>
@@ -228,6 +240,8 @@ const Dashboard: React.FC = () => {
                                 vwap={strategyData?.vwap}
                                 currentPrice={currentPrice}
                                 supertrend={strategyData?.supertrend}
+                                ema5={strategyData?.ema_5}
+                                ema20={strategyData?.ema_20}
                             />
                         </div>
                     </div>

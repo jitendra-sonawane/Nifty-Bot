@@ -19,6 +19,11 @@ const MetricsGrid: React.FC<MetricsGridProps> = ({ currentPrice, priceHistory, s
                     <span className="text-[10px] text-gray-500 font-mono">LTP</span>
                 </div>
                 <div className="text-3xl font-mono font-bold text-white mb-1">{currentPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</div>
+                {status?.market_state?.market_movement !== undefined && status?.market_state?.market_movement !== null && (
+                    <div className={`text-sm font-mono font-bold mb-2 ${status.market_state.market_movement >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {status.market_state.market_movement >= 0 ? '▲' : '▼'} {Math.abs(status.market_state.market_movement).toFixed(2)} pts
+                    </div>
+                )}
                 <div className="h-10 w-full opacity-50">
                     <PriceChart data={priceHistory} height={40} />
                 </div>
@@ -44,18 +49,21 @@ const MetricsGrid: React.FC<MetricsGridProps> = ({ currentPrice, priceHistory, s
             {/* P&L Card */}
             <div className="card p-4 rounded-xl bg-gradient-to-b from-white/5 to-white/0 border border-white/5 shadow-lg">
                 <h3 className="text-xs text-gray-400 uppercase tracking-wider mb-2">Daily P&L</h3>
-                <div className={`text-3xl font-mono font-bold mb-1 ${(status?.trading_mode === 'PAPER' ? (status.paper_daily_pnl ?? status.paper_pnl) : 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {status?.trading_mode === 'PAPER' ? `₹${(status.paper_daily_pnl ?? status.paper_pnl)?.toFixed(2)}` : '--'}
-                </div>
-                <div className="text-[10px] text-gray-500">
-                    {status?.trading_mode === 'PAPER' && status.paper_daily_pnl !== undefined ? (
-                        <>
-                            Realized: ₹{status.paper_daily_pnl?.toFixed(2)} | Unrealized: ₹{status.paper_pnl?.toFixed(2)}
-                        </>
-                    ) : (
-                        `Risk Limit: ₹${status?.risk_stats?.daily_loss_limit?.toFixed(0) || '0'}`
-                    )}
-                </div>
+                {status?.trading_mode === 'PAPER' ? (
+                    <>
+                        <div className={`text-3xl font-mono font-bold mb-1 ${((status.paper_daily_pnl || 0) + (status.paper_pnl || 0)) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            ₹{((status.paper_daily_pnl || 0) + (status.paper_pnl || 0)).toFixed(2)}
+                        </div>
+                        <div className="text-[10px] text-gray-500">
+                            Realized: ₹{(status.paper_daily_pnl || 0).toFixed(2)} | Unrealized: ₹{(status.paper_pnl || 0).toFixed(2)}
+                        </div>
+                    </>
+                ) : (
+                    <>
+                        <div className="text-3xl font-mono font-bold mb-1 text-gray-400">--</div>
+                        <div className="text-[10px] text-gray-500">Risk Limit: ₹{status?.risk_stats?.daily_loss_limit?.toFixed(0) || '0'}</div>
+                    </>
+                )}
             </div>
 
             {/* AI Status Card */}

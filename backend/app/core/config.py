@@ -14,7 +14,7 @@ class Config:
     ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN")
     
     # Trading Configuration
-    TIMEFRAME = "1minute"  # Upstox API format (1minute, 30minute, day, week, month)
+    TIMEFRAME = "5minute"  # Upstox v3 API format (1minute, 5minute, 10minute, 15minute, 30minute, 60minute, day, week, month)
     SYMBOL_NIFTY_50 = "NSE_INDEX|Nifty 50"
     
     # Strategy Parameters

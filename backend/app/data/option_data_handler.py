@@ -12,6 +12,7 @@ from functools import lru_cache
 from app.core.websocket_client import MarketDataSocket
 from app.data.data_fetcher import DataFetcher
 from app.core.greeks import GreeksCalculator
+from app.core.pcr_calculator import PCRCalculator
 from app.core.logger_config import logger
 
 
@@ -37,6 +38,7 @@ class OptionDataHandler:
         """
         self.data_fetcher = data_fetcher
         self.greeks_calc = greeks_calc
+        self.pcr_calc = PCRCalculator()
         # Initialize WebSocket with proper parameters
         self.ws_client = MarketDataSocket(access_token)
         
@@ -297,12 +299,22 @@ class OptionDataHandler:
             if total_ce_oi <= 0:
                 return
             
-            pcr = total_pe_oi / total_ce_oi
+            pcr = self.pcr_calc.calculate_pcr(total_pe_oi, total_ce_oi)
+            self.pcr_calc.record_pcr(pcr, total_pe_oi, total_ce_oi)
+            
+            analysis = self.pcr_calc.get_pcr_analysis(pcr, total_pe_oi, total_ce_oi)
             
             update = {
                 'pcr': pcr,
                 'totalCeOi': total_ce_oi,
                 'totalPeOi': total_pe_oi,
+                'sentiment': analysis.get('sentiment'),
+                'emoji': analysis.get('emoji'),
+                'is_bullish': analysis.get('is_bullish'),
+                'is_bearish': analysis.get('is_bearish'),
+                'is_extreme': analysis.get('is_extreme'),
+                'trend': analysis.get('trend'),
+                'interpretation': analysis.get('interpretation'),
                 'timestamp': datetime.now().isoformat()
             }
             
@@ -343,10 +355,28 @@ class OptionDataHandler:
                 if self._get_option_type_from_key(key) == 'PE'
             ])
         
-        if total_ce_oi <= 0:
-            return None
+        return self.pcr_calc.calculate_pcr(total_pe_oi, total_ce_oi)
+    
+    def get_pcr_analysis(self) -> Dict:
+        """
+        Get comprehensive PCR analysis.
         
-        return total_pe_oi / total_ce_oi
+        Returns:
+            Dict with PCR analysis details
+        """
+        with self.lock:
+            total_ce_oi = sum([
+                oi for key, oi in self.option_oi_cache.items()
+                if self._get_option_type_from_key(key) == 'CE'
+            ])
+            
+            total_pe_oi = sum([
+                oi for key, oi in self.option_oi_cache.items()
+                if self._get_option_type_from_key(key) == 'PE'
+            ])
+        
+        pcr = self.pcr_calc.calculate_pcr(total_pe_oi, total_ce_oi)
+        return self.pcr_calc.get_pcr_analysis(pcr, total_pe_oi, total_ce_oi)
     
     def unsubscribe(self) -> None:
         """Unsubscribe from all option updates."""

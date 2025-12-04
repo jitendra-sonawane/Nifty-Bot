@@ -24,6 +24,12 @@ class StrategyRunner:
         self.last_signal_time = {}
         self.signal_cooldown_seconds = 120
         
+        # Support/Resistance Caching (recalculate every 5 minutes)
+        self.last_sr_calculation_time = 0
+        self.sr_cache_duration = 300
+        self.cached_support_resistance = {}
+        self.cached_breakout = {}
+        
         # Callbacks
         self.on_signal: List[Callable] = []
         
@@ -44,21 +50,30 @@ class StrategyRunner:
             return None
 
     def _run_strategy(self, current_price: float, market_state: Dict):
-        # Fetch historical data
-        to_date = datetime.datetime.now().strftime('%Y-%m-%d')
+        # Fetch historical data with correct date format (yyyy-mm-dd)
         from_date = (datetime.datetime.now() - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
+        to_date = datetime.datetime.now().strftime('%Y-%m-%d')
         
+        # Map timeframes to supported Upstox intervals
+        # Upstox API supports: 1minute, 30minute, day, week, month
+        # Note: 5minute is NOT supported, so we map it to 1minute
         interval_map = {
             '1minute': '1minute',
-            '30minute': '30minute',
             '5minute': '5minute',
+            '10minute': '10minute',
+            '15minute': '15minute',
+            '30minute': '30minute',
+            '60minute': '60minute',
             'day': 'day',
             'week': 'week',
             'month': 'month'
         }
         interval = interval_map.get(self.timeframe, '5minute')
         
+        logger.info(f"📊 Fetching v3 data: timeframe={self.timeframe}, interval={interval}, dates={from_date} to {to_date}")
+        
         df = self.data_fetcher.get_historical_data('NSE_INDEX|Nifty 50', interval, from_date, to_date)
+        # For 5-minute candles: EMA(5)=25min, EMA(20)=100min
         
         if df is not None and not df.empty:
             pcr = market_state.get('pcr')
@@ -68,6 +83,14 @@ class StrategyRunner:
             
             if isinstance(result, dict):
                 signal = result.get('signal', 'HOLD')
+                current_time = datetime.datetime.now().timestamp()
+                if current_time - self.last_sr_calculation_time >= self.sr_cache_duration:
+                    self.cached_support_resistance = result.get('support_resistance', {})
+                    self.cached_breakout = result.get('breakout', {})
+                    self.last_sr_calculation_time = current_time
+                else:
+                    result['support_resistance'] = self.cached_support_resistance
+                    result['breakout'] = self.cached_breakout
                 self.latest_strategy_data = result
             else:
                 signal = result

@@ -93,12 +93,13 @@ class TradingReasoning:
         summary = {}
         filter_names = {
             'supertrend': '📊 Supertrend',
+            'ema_crossover': '📈 EMA Crossover',
             'price_vwap': '📍 Price vs VWAP',
             'rsi': '🔢 RSI Level',
             'volume': '📊 Volume',
             'volatility': '📈 Volatility (ATR)',
             'pcr': '🎯 PCR Ratio',
-            'greeks': '🧮 Greeks',
+            'greeks': '🧮 Greeks Quality',
             'entry_confirmation': '✅ Entry Confirmed'
         }
         
@@ -113,6 +114,8 @@ class TradingReasoning:
         """Generate reasoning for BUY_CE (bullish call) signal"""
         
         rsi = signal_data.get('rsi', 0)
+        ema_5 = signal_data.get('ema_5', 0)
+        ema_20 = signal_data.get('ema_20', 0)
         vwap = signal_data.get('vwap', 0)
         supertrend = signal_data.get('supertrend', '')
         
@@ -121,8 +124,9 @@ class TradingReasoning:
         nearest_resistance = support_resistance.get('nearest_resistance', 0) if support_resistance else 0
         
         key_factors = [
-            f"🔴 RSI: {rsi:.1f} (Overbought condition - momentum strong)",
-            f"📈 Supertrend: {supertrend} (Price above moving trend)",
+            f"📈 EMA Crossover: {ema_5:.0f} > {ema_20:.0f} (Uptrend confirmed)",
+            f"🔴 RSI: {rsi:.1f} (Strong momentum - above 50)",
+            f"📊 Supertrend: {supertrend} (Price above moving trend)",
             f"💰 Price at ₹{current_price:.2f} (Above VWAP ₹{vwap:.2f})",
             f"🛡️ Support: ₹{nearest_support:.2f} (Downside protection)",
             f"🎯 Resistance: ₹{nearest_resistance:.2f} (Profit target)"
@@ -139,15 +143,15 @@ class TradingReasoning:
         ]
         
         trade_rationale = (
-            f"Multiple bullish signals aligned: Strong uptrend (Supertrend), "
-            f"Overbought momentum (RSI {rsi:.1f}), and price trading above VWAP ({vwap:.2f}). "
+            f"Multiple bullish signals aligned: EMA crossover ({ema_5:.0f}>{ema_20:.0f}), "
+            f"Strong uptrend (Supertrend), strong momentum (RSI {rsi:.1f}), and price above VWAP ({vwap:.2f}). "
             f"This suggests buyers are in control and willing to push prices higher."
         )
         
         why_now = (
-            f"The Supertrend confirmation combined with RSI {rsi:.1f} shows no hesitation from buyers. "
-            f"Price is {((current_price - vwap) / vwap * 100):.2f}% above VWAP, "
-            f"confirming strength. Entry window is NOW as momentum is building."
+            f"EMA just crossed above ({ema_5:.0f}>{ema_20:.0f}) with Supertrend confirmation and RSI {rsi:.1f}. "
+            f"Price is {((current_price - vwap) / vwap * 100):.2f}% above VWAP. "
+            f"Entry window is NOW - this is the start of the uptrend."
         )
         
         return {
@@ -170,6 +174,8 @@ class TradingReasoning:
         """Generate reasoning for BUY_PE (bearish put) signal"""
         
         rsi = signal_data.get('rsi', 0)
+        ema_5 = signal_data.get('ema_5', 0)
+        ema_20 = signal_data.get('ema_20', 0)
         vwap = signal_data.get('vwap', 0)
         supertrend = signal_data.get('supertrend', '')
         
@@ -178,8 +184,9 @@ class TradingReasoning:
         nearest_resistance = support_resistance.get('nearest_resistance', 0) if support_resistance else 0
         
         key_factors = [
-            f"🔵 RSI: {rsi:.1f} (Oversold condition - momentum weak)",
-            f"📉 Supertrend: {supertrend} (Price below moving trend)",
+            f"📉 EMA Crossover: {ema_5:.0f} < {ema_20:.0f} (Downtrend confirmed)",
+            f"🔵 RSI: {rsi:.1f} (Weak momentum - below 50)",
+            f"📊 Supertrend: {supertrend} (Price below moving trend)",
             f"💰 Price at ₹{current_price:.2f} (Below VWAP ₹{vwap:.2f})",
             f"🛡️ Resistance: ₹{nearest_resistance:.2f} (Downside protection ceiling)",
             f"🎯 Support: ₹{nearest_support:.2f} (Profit target)"
@@ -196,15 +203,15 @@ class TradingReasoning:
         ]
         
         trade_rationale = (
-            f"Multiple bearish signals aligned: Strong downtrend (Supertrend), "
-            f"Oversold momentum (RSI {rsi:.1f}), and price trading below VWAP ({vwap:.2f}). "
+            f"Multiple bearish signals aligned: EMA crossover ({ema_5:.0f}<{ema_20:.0f}), "
+            f"Strong downtrend (Supertrend), weak momentum (RSI {rsi:.1f}), and price below VWAP ({vwap:.2f}). "
             f"This suggests sellers are in control and willing to push prices lower."
         )
         
         why_now = (
-            f"The Supertrend confirmation combined with RSI {rsi:.1f} shows no hesitation from sellers. "
-            f"Price is {((vwap - current_price) / vwap * 100):.2f}% below VWAP, "
-            f"confirming weakness. Entry window is NOW as downward momentum is building."
+            f"EMA just crossed below ({ema_5:.0f}<{ema_20:.0f}) with Supertrend confirmation and RSI {rsi:.1f}. "
+            f"Price is {((vwap - current_price) / vwap * 100):.2f}% below VWAP. "
+            f"Entry window is NOW - this is the start of the downtrend."
         )
         
         return {
@@ -247,7 +254,7 @@ class TradingReasoning:
         if not filters.get('pcr'):
             failing_reasons.append("Put-Call ratio not aligned")
         if not filters.get('greeks'):
-            failing_reasons.append("Options Greeks not favorable")
+            failing_reasons.append("Greeks quality too low")
         
         key_factors = [
             f"📊 Supertrend: {signal_data.get('supertrend', 'UNKNOWN')} (Mixed signals)",

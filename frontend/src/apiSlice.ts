@@ -45,10 +45,23 @@ export interface StatusResponse {
     atm_strike: number;
     last_updated: string;
     logs: string[];
+    market_state?: {
+        current_price: number;
+        atm_strike: number;
+        pcr: number | null;
+        pcr_analysis: any;
+        vix: number | null;
+        sentiment: any;
+        greeks: any;
+        previous_close: number | null;
+        market_movement: number | null;
+    };
     strategy_data?: {
         signal?: string;
         rsi?: number;
         ema_50?: number;
+        ema_5?: number;
+        ema_20?: number;
         macd?: number;
         macd_signal?: number;
         supertrend?: string;
@@ -85,6 +98,7 @@ export interface StatusResponse {
             pcr: boolean;
             greeks: boolean;
             entry_confirmation: boolean;
+            ema_crossover?: boolean;
         };
         volume_ratio?: number;
         atr_pct?: number;
@@ -95,6 +109,7 @@ export interface StatusResponse {
         vix: number;
         pcr: number;
     };
+    pcr_analysis?: any;
     decision_reason?: string;
     reasoning?: {
         timestamp?: string;
