@@ -392,6 +392,48 @@ def auth_debug():
         "token_status": Config.is_token_valid()
     }
 
+@app.get("/user/profile")
+def get_user_profile():
+    """Get user profile information from Upstox"""
+    try:
+        # Check if token is valid
+        token_status = Config.is_token_valid()
+        if not token_status["is_valid"]:
+            raise HTTPException(status_code=401, detail="Access token is invalid or expired")
+        
+        # Import upstox_client
+        import upstox_client
+        from upstox_client.rest import ApiException
+        
+        # Configure API client
+        configuration = upstox_client.Configuration()
+        configuration.access_token = Config.ACCESS_TOKEN
+        api_client = upstox_client.ApiClient(configuration)
+        user_api = upstox_client.UserApi(api_client)
+        
+        # Fetch user profile
+        api_version = '2.0'
+        api_response = user_api.get_profile(api_version)
+        
+        # Extract user data
+        if api_response and api_response.data:
+            user_data = {
+                "user_id": api_response.data.user_id if hasattr(api_response.data, 'user_id') else None,
+                "user_name": api_response.data.user_name if hasattr(api_response.data, 'user_name') else None,
+                "email": api_response.data.email if hasattr(api_response.data, 'email') else None,
+            }
+            logger.info(f"✅ User profile fetched: {user_data.get('user_name', 'N/A')}")
+            return user_data
+        else:
+            raise HTTPException(status_code=500, detail="Failed to fetch user profile")
+            
+    except ApiException as e:
+        logger.error(f"❌ Upstox API error fetching profile: {e}")
+        raise HTTPException(status_code=e.status, detail=f"Upstox API error: {e.reason}")
+    except Exception as e:
+        logger.error(f"❌ Error fetching user profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/auth/callback", response_class=HTMLResponse)
 def auth_callback(code: str = None):
     if not code:

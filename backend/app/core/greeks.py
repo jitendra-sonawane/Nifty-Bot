@@ -33,7 +33,7 @@ class GreeksCalculator:
             risk_free_rate: Override instance risk-free rate
         
         Returns:
-            Dict with delta, gamma, theta, vega, rho
+            Dict with delta, gamma, theta, vega, rho, quality_score
         """
         if risk_free_rate is not None:
             r = risk_free_rate
@@ -41,7 +41,7 @@ class GreeksCalculator:
             r = self.r
             
         if T <= 0 or sigma <= 0:
-            return {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'rho': 0}
+            return {'delta': 0, 'gamma': 0, 'theta': 0, 'vega': 0, 'rho': 0, 'quality_score': 0}
 
         d1 = self.d1(S, K, T, sigma)
         d2 = self.d2(S, K, T, sigma)
@@ -83,12 +83,16 @@ class GreeksCalculator:
         else:  # PE
             rho = -K * T * np.exp(-r * T) * norm.cdf(-d2) / 100.0
 
+        # Calculate Greeks quality score
+        quality_score = self._calculate_quality_score(S, K, T, sigma, delta, gamma, vega, option_type)
+
         return {
             'delta': round(float(delta), 4),
             'gamma': round(float(gamma), 6),
             'theta': round(float(theta), 4),
             'vega': round(float(vega), 4),
-            'rho': round(float(rho), 4)
+            'rho': round(float(rho), 4),
+            'quality_score': quality_score
         }
 
     def black_scholes_price(self, S, K, T, sigma, option_type='CE', risk_free_rate=None):
@@ -185,6 +189,69 @@ class GreeksCalculator:
             sigma = np.clip(sigma, 0.001, 5.0)
 
         return max(round(sigma, 4), 0.0001)
+
+    def _calculate_quality_score(self, S, K, T, sigma, delta, gamma, vega, option_type):
+        """
+        Calculate Greeks quality score (0-100).
+        Scores based on:
+        - Moneyness (ATM options have better Greeks)
+        - Time to expiry (more time = better Greeks)
+        - Volatility (reasonable IV = better Greeks)
+        - Greeks stability (gamma/vega indicate liquidity)
+        
+        Returns:
+            Quality score 0-100 (0=Poor, 50=Fair, 75=Good, 100=Excellent)
+        """
+        score = 0
+        
+        # 1. Moneyness score (ATM is best, 0-30 points)
+        moneyness = abs(S - K) / S
+        if moneyness < 0.01:  # Very ATM
+            score += 30
+        elif moneyness < 0.05:  # ATM
+            score += 25
+        elif moneyness < 0.10:  # Near ATM
+            score += 20
+        elif moneyness < 0.20:  # Slightly OTM/ITM
+            score += 10
+        else:  # Far OTM/ITM
+            score += 0
+        
+        # 2. Time to expiry score (0-30 points)
+        # Best Greeks when 5-30 days to expiry
+        days_to_expiry = T * 365
+        if 5 <= days_to_expiry <= 30:
+            score += 30
+        elif 2 <= days_to_expiry < 5 or 30 < days_to_expiry <= 60:
+            score += 20
+        elif 1 <= days_to_expiry < 2 or 60 < days_to_expiry <= 90:
+            score += 10
+        else:  # < 1 day or > 90 days
+            score += 0
+        
+        # 3. Volatility score (0-20 points)
+        # Reasonable IV is 10-100%, extreme IV = poor Greeks
+        if 0.10 <= sigma <= 1.0:
+            score += 20
+        elif 0.05 <= sigma < 0.10 or 1.0 < sigma <= 1.5:
+            score += 10
+        else:  # < 5% or > 150%
+            score += 0
+        
+        # 4. Greeks stability score (0-20 points)
+        # Gamma and Vega indicate liquidity and Greeks stability
+        if gamma > 0 and vega > 0:
+            # Good gamma/vega ratio indicates stable Greeks
+            if 0.0001 <= gamma <= 0.01 and 0.01 <= vega <= 1.0:
+                score += 20
+            elif gamma > 0 and vega > 0:
+                score += 10
+            else:
+                score += 0
+        else:
+            score += 0
+        
+        return max(0, min(100, score))  # Clamp to 0-100
 
     def time_to_expiry(self, expiry_date_str):
         """

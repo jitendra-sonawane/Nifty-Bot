@@ -21,11 +21,13 @@ interface BreakoutData {
 interface SupportResistanceProps {
   supportResistance?: SupportResistanceData;
   breakout?: BreakoutData;
+  currentPrice?: number;
 }
 
 const SupportResistance: React.FC<SupportResistanceProps> = ({
   supportResistance,
-  breakout
+  breakout,
+  currentPrice
 }) => {
   const {
     support_levels = [],
@@ -36,6 +38,14 @@ const SupportResistance: React.FC<SupportResistanceProps> = ({
     resistance_distance_pct,
     current_price = 0
   } = supportResistance || {};
+
+  const displayPrice = currentPrice || current_price || 0;
+  const liveSupportDist = nearest_support && displayPrice > 0
+    ? ((displayPrice - nearest_support) / displayPrice) * 100
+    : support_distance_pct;
+  const liveResistanceDist = nearest_resistance && displayPrice > 0
+    ? ((nearest_resistance - displayPrice) / displayPrice) * 100
+    : resistance_distance_pct;
 
   const {
     is_breakout = false,
@@ -50,7 +60,7 @@ const SupportResistance: React.FC<SupportResistanceProps> = ({
       <div className="bg-gradient-to-r from-slate-700/30 to-slate-600/30 border border-slate-500/30 rounded-lg p-3">
         <div className="text-xs text-slate-400 mb-1">Current Price</div>
         <div className="text-lg font-bold text-white">
-          ₹{current_price?.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
+          ₹{displayPrice?.toLocaleString('en-IN', { maximumFractionDigits: 2 })}
         </div>
       </div>
 
@@ -88,7 +98,7 @@ const SupportResistance: React.FC<SupportResistanceProps> = ({
                 ₹{nearest_resistance?.toFixed(2)}
               </div>
               <div className="text-xs text-red-200/70">
-                +{resistance_distance_pct?.toFixed(2)}%
+                +{liveResistanceDist?.toFixed(2)}%
               </div>
             </div>
           </div>
@@ -122,7 +132,7 @@ const SupportResistance: React.FC<SupportResistanceProps> = ({
                 ₹{nearest_support?.toFixed(2)}
               </div>
               <div className="text-xs text-green-200/70">
-                -{support_distance_pct?.toFixed(2)}%
+                -{liveSupportDist?.toFixed(2)}%
               </div>
             </div>
           </div>

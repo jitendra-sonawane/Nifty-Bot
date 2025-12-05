@@ -1,18 +1,16 @@
-import React from "react";
+import React from 'react';
 
-interface Props {
-  children?: React.ReactNode;
-  className?: string;
-  width?: string;
+interface ColumnProps {
+    children: React.ReactNode;
+    className?: string;
 }
 
-const Column: React.FC<Props> = ({ children, className, width }) => {
-  const style = width ? { flex: `0 0 ${width}` } : { flex: "1 1 0" };
-  return (
-    <div style={style} className={`column flex flex-col gap-4 ${className ?? ""}`}>
-      {children}
-    </div>
-  );
+const Column: React.FC<ColumnProps> = ({ children, className = '' }) => {
+    return (
+        <div className={`flex flex-col gap-3 ${className}`}>
+            {children}
+        </div>
+    );
 };
 
 export default Column;
