@@ -41,40 +41,60 @@ class StrategyEngine:
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         atr = tr.rolling(window=period).mean()
         
-        # Calculate Supertrend
+        # Basic Bands
         hl2 = (high + low) / 2
-        final_upperband = hl2 + (multiplier * atr)
-        final_lowerband = hl2 - (multiplier * atr)
+        basic_upperband = hl2 + (multiplier * atr)
+        basic_lowerband = hl2 - (multiplier * atr)
+        
+        # Initialize Final Bands with Basic Bands
+        final_upperband = basic_upperband.copy()
+        final_lowerband = basic_lowerband.copy()
         
         supertrend = [True] * len(df) # True = Bullish, False = Bearish
         
+        # Iterate to calculate Final Bands and Trend
         for i in range(1, len(df.index)):
             curr, prev = i, i-1
             
-            # Upper Band Logic - maintain previous high if current is lower
-            if close.iloc[curr] > final_upperband.iloc[prev]:
-                final_upperband.iloc[curr] = max(final_upperband.iloc[curr], final_upperband.iloc[prev])
-            else:
-                final_upperband.iloc[curr] = final_upperband.iloc[curr]
+            # Skip if ATR is NaN (first 'period' rows)
+            if pd.isna(atr.iloc[curr]):
+                continue
                 
-            # Lower Band Logic - maintain previous low if current is higher
-            if close.iloc[curr] < final_lowerband.iloc[prev]:
-                final_lowerband.iloc[curr] = min(final_lowerband.iloc[curr], final_lowerband.iloc[prev])
+            # Calculate Final Upper Band
+            # If previous final band is NaN, initialize with current basic band
+            if pd.isna(final_upperband.iloc[prev]):
+                final_upperband.iloc[curr] = basic_upperband.iloc[curr]
+            # If basic upper < prev final upper OR prev close > prev final upper (trend change/reset)
+            elif basic_upperband.iloc[curr] < final_upperband.iloc[prev] or close.iloc[prev] > final_upperband.iloc[prev]:
+                final_upperband.iloc[curr] = basic_upperband.iloc[curr]
             else:
-                final_lowerband.iloc[curr] = final_lowerband.iloc[curr]
+                final_upperband.iloc[curr] = final_upperband.iloc[prev]
+                
+            # Calculate Final Lower Band
+            # If previous final band is NaN, initialize with current basic band
+            if pd.isna(final_lowerband.iloc[prev]):
+                final_lowerband.iloc[curr] = basic_lowerband.iloc[curr]
+            # If basic lower > prev final lower OR prev close < prev final lower (trend change/reset)
+            elif basic_lowerband.iloc[curr] > final_lowerband.iloc[prev] or close.iloc[prev] < final_lowerband.iloc[prev]:
+                final_lowerband.iloc[curr] = basic_lowerband.iloc[curr]
+            else:
+                final_lowerband.iloc[curr] = final_lowerband.iloc[prev]
                 
             # Trend Logic
-            if close.iloc[curr] > final_upperband.iloc[prev]:
-                supertrend[curr] = True
-            elif close.iloc[curr] < final_lowerband.iloc[prev]:
-                supertrend[curr] = False
+            # If currently Bullish (based on previous state)
+            if supertrend[prev] == True:
+                # If price closes below Lower Band -> Flip to Bearish
+                if close.iloc[curr] <= final_lowerband.iloc[prev]:
+                    supertrend[curr] = False
+                else:
+                    supertrend[curr] = True
+            # If currently Bearish
             else:
-                supertrend[curr] = supertrend[prev]
-                
-                if supertrend[curr] == True and final_lowerband.iloc[curr] < final_lowerband.iloc[prev]:
-                    final_lowerband.iloc[curr] = final_lowerband.iloc[prev]
-                if supertrend[curr] == False and final_upperband.iloc[curr] > final_upperband.iloc[prev]:
-                    final_upperband.iloc[curr] = final_upperband.iloc[prev]
+                # If price closes above Upper Band -> Flip to Bullish
+                if close.iloc[curr] >= final_upperband.iloc[prev]:
+                    supertrend[curr] = True
+                else:
+                    supertrend[curr] = False
 
         return pd.Series(supertrend, index=df.index), final_upperband, final_lowerband
 

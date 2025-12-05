@@ -88,6 +88,9 @@ class TradingBot:
             await self.market_data.start()
         if self.strategy_runner:
             self.strategy_runner.start()
+        
+        # Start periodic strategy update task (runs even when market is closed)
+        asyncio.create_task(self._periodic_strategy_update())
             
         self.log("Bot Started.")
 
@@ -146,6 +149,35 @@ class TradingBot:
                     self.status_callback(self.get_status())
         except Exception as e:
             self.log(f"Error in price update handler: {e}")
+    
+    async def _periodic_strategy_update(self):
+        """Periodically update strategy data even when market is closed."""
+        while self.is_running:
+            try:
+                await asyncio.sleep(30)  # Run every 30 seconds
+                
+                if not self.is_running:
+                    break
+                
+                # Get current price (use last known price if market is closed)
+                current_price = self.market_data.current_price if self.market_data else 0
+                
+                if current_price > 0 and self.strategy_runner:
+                    market_state = self.market_data.get_market_state() if self.market_data else {}
+                    
+                    # Run strategy to update indicators and filters
+                    await self.strategy_runner.on_price_update(current_price, market_state)
+                    
+                    logger.debug(f"📊 Periodic strategy update completed. Price: {current_price}")
+                    
+                    # Broadcast updated status
+                    if self.status_callback:
+                        if asyncio.iscoroutinefunction(self.status_callback):
+                            await self.status_callback(self.get_status())
+                        else:
+                            self.status_callback(self.get_status())
+            except Exception as e:
+                logger.error(f"Error in periodic strategy update: {e}")
 
     async def _run_strategy_wrapper(self, price, market_state):
         # Helper to run strategy which is sync but wrapped in runner

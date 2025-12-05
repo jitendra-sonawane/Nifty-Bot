@@ -207,11 +207,53 @@ class StrategyRunner:
             if df is not None and not df.empty:
                 self.candle_manager.initialize(df)
                 
+                # Check if last candle is incomplete (matches current time window)
+                last_candle_incomplete = False
+                try:
+                    last_time = df.index[-1]
+                    
+                    # Robust comparison: Convert both to naive IST for comparison
+                    # We assume last_time from Upstox is IST (or we strip tz to make it naive)
+                    last_time_naive = last_time.replace(tzinfo=None) if last_time.tzinfo else last_time
+                    
+                    # Current time in IST
+                    ist_offset = datetime.timedelta(hours=5, minutes=30)
+                    now_utc = datetime.datetime.now(datetime.timezone.utc)
+                    now_ist = now_utc + ist_offset
+                    
+                    # Calculate start of current candle in IST
+                    interval_mins = self.candle_manager.interval_minutes
+                    minute_block = (now_ist.minute // interval_mins) * interval_mins
+                    current_candle_start_ist = now_ist.replace(minute=minute_block, second=0, microsecond=0, tzinfo=None)
+                    
+                    logger.info(f"🔍 EMA Init Check: Last History Candle: {last_time_naive} | Current Time Block: {current_candle_start_ist}")
+                    
+                    # Check if they match (allow small tolerance just in case)
+                    time_diff = abs((current_candle_start_ist - last_time_naive).total_seconds())
+                    
+                    if time_diff < 60: # Match if within 60 seconds
+                        last_candle_incomplete = True
+                        logger.info(f"🕯️ Last candle in history ({last_time}) is incomplete (current). Initializing EMAs accordingly.")
+                    else:
+                        logger.info(f"✅ Last candle in history ({last_time}) is considered COMPLETE. Standard initialization.")
+                        if last_time_naive > current_candle_start_ist:
+                             logger.warning(f"⚠️ Last candle ({last_time_naive}) is in the FUTURE compared to system time ({current_candle_start_ist})!")
+                        elif (current_candle_start_ist - last_time_naive).total_seconds() > interval_mins * 60:
+                             logger.warning(f"⚠️ Gap detected: Last candle ({last_time_naive}) is older than current block ({current_candle_start_ist}). Market might be closed or data missing.")
+                except Exception as e:
+                    logger.warning(f"Error checking incomplete candle: {e}")
+                
                 self.candle_manager.df['ema_5'] = self.candle_manager.df['close'].ewm(span=5, adjust=False).mean()
                 self.candle_manager.df['ema_20'] = self.candle_manager.df['close'].ewm(span=20, adjust=False).mean()
                 
-                self.ema_5.initialize(self.candle_manager.df['close'])
-                self.ema_20.initialize(self.candle_manager.df['close'])
+                # Log the values before initialization
+                if not self.candle_manager.df.empty:
+                    last_ema_5 = self.candle_manager.df['ema_5'].iloc[-1]
+                    prev_ema_5 = self.candle_manager.df['ema_5'].iloc[-2] if len(self.candle_manager.df) > 1 else 0
+                    logger.info(f"📊 Pre-Init EMA_5: Last={last_ema_5:.2f}, Prev={prev_ema_5:.2f}")
+
+                self.ema_5.initialize(self.candle_manager.df['close'], last_candle_incomplete)
+                self.ema_20.initialize(self.candle_manager.df['close'], last_candle_incomplete)
                 
                 self.is_initialized = True
                 logger.info(f"✅ StrategyRunner Initialized with {len(df)} candles")
@@ -222,17 +264,42 @@ class StrategyRunner:
             logger.error(f"Error initializing StrategyRunner: {e}", exc_info=True)
 
     def start(self):
+        # Write to a test file to verify this method is called
+        with open('/tmp/strategy_runner_start_called.txt', 'w') as f:
+            f.write(f"StrategyRunner.start() called at {datetime.datetime.now()}\\n")
+        
+        print("="*80)
+        print("🚀 StrategyRunner.start() called!")
+        print("="*80)
+        logger.info("="*80)
+        logger.info("🚀 StrategyRunner.start() called!")
+        logger.info("="*80)
         self.is_running = True
         logger.info("🚀 StrategyRunner started. Performing initial analysis...")
         
         # Force initial run to populate state even if market is closed
         try:
+            with open('/tmp/strategy_runner_debug.txt', 'a') as f:
+                f.write(f"[{datetime.datetime.now()}] Entering try block\\n")
+                f.write(f"  is_initialized: {self.is_initialized}\\n")
+            
             if not self.is_initialized:
+                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
+                    f.write(f"  Calling _initialize_data()\\n")
                 self._initialize_data()
+                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
+                    f.write(f"  After _initialize_data(), is_initialized: {self.is_initialized}\\n")
             
             if self.is_initialized and not self.candle_manager.df.empty:
+                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
+                    f.write(f"  DataFrame not empty, shape: {self.candle_manager.df.shape}\\n")
+                
                 last_close = self.candle_manager.df['close'].iloc[-1]
                 logger.info(f"📊 Running initial strategy check on last close: {last_close}")
+                
+                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
+                    f.write(f"  last_close: {last_close}\\n")
+                    f.write(f"  Calling _run_strategy()\\n")
                 
                 # DEBUG: Log DataFrame details
                 df = self.candle_manager.df
@@ -245,9 +312,28 @@ class StrategyRunner:
                     if 'ema_20' in df.columns:
                         logger.info(f"🐛 DEBUG: Last EMA 20: {df['ema_20'].iloc[-1]}")
                 
-                self._run_strategy(last_close, {})
+                # Run strategy with empty market_state to populate initial data
+                # This ensures filters and indicators are calculated even when market is closed
+                result = self._run_strategy(last_close, {})
+                
+                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
+                    f.write(f"  After _run_strategy(), result: {result is not None}\\n")
+                    f.write(f"  latest_strategy_data keys: {list(self.latest_strategy_data.keys()) if self.latest_strategy_data else 'None'}\\n")
+                
+                # Log the result to verify data is populated
+                if result:
+                    logger.info(f"✅ Initial strategy run completed with signal: {result.get('signal')}")
+                elif self.latest_strategy_data:
+                    logger.info(f"✅ Initial strategy data populated: Signal={self.latest_strategy_data.get('signal')}, RSI={self.latest_strategy_data.get('rsi')}, Filters={len(self.latest_strategy_data.get('filters', {}))}")
+                else:
+                    logger.warning("⚠️ Initial strategy run did not populate data")
+            else:
+                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
+                    f.write(f"  Skipped: is_initialized={self.is_initialized}, df.empty={self.candle_manager.df.empty if self.is_initialized else 'N/A'}\\n")
         except Exception as e:
-            logger.error(f"Error in initial strategy run: {e}")
+            with open('/tmp/strategy_runner_debug.txt', 'a') as f:
+                f.write(f"  EXCEPTION: {str(e)}\\n")
+            logger.error(f"Error in initial strategy run: {e}", exc_info=True)
 
     def stop(self):
         self.is_running = False

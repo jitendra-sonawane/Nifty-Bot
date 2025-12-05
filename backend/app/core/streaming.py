@@ -13,9 +13,15 @@ class StreamingEMA:
         self.current_ema = None
         self.initialized = False
 
-    def initialize(self, historical_series: pd.Series):
+    def initialize(self, historical_series: pd.Series, last_candle_incomplete=False):
         """
         Initialize with historical data series (close prices).
+        
+        Args:
+            historical_series: Series of historical close prices
+            last_candle_incomplete: If True, the last value in series is considered 
+                                  an incomplete/forming candle, so prev_ema will be set 
+                                  to the second-to-last value.
         """
         if historical_series.empty:
             return
@@ -24,11 +30,19 @@ class StreamingEMA:
         # adjust=False matches the recursive formula: EMA_t = Price_t * alpha + EMA_t-1 * (1-alpha)
         ema_series = historical_series.ewm(span=self.period, adjust=False).mean()
         
-        # Store the last finalized EMA (from the last closed candle)
-        self.prev_ema = ema_series.iloc[-1]
-        self.current_ema = self.prev_ema
+        if last_candle_incomplete and len(ema_series) > 1:
+            # The last value is the 'current' temporary EMA
+            # The previous value is the 'finalized' previous EMA
+            self.prev_ema = ema_series.iloc[-2]
+            self.current_ema = ema_series.iloc[-1]
+            logger.info(f"🔄 StreamingEMA Initialized (Incomplete Last): Prev={self.prev_ema:.2f}, Current={self.current_ema:.2f}")
+        else:
+            # Store the last finalized EMA (from the last closed candle)
+            self.prev_ema = ema_series.iloc[-1]
+            self.current_ema = self.prev_ema
+            logger.info(f"✅ StreamingEMA Initialized (Complete Last): Prev={self.prev_ema:.2f}, Current={self.current_ema:.2f}")
+            
         self.initialized = True
-        logger.info(f"✅ StreamingEMA({self.period}) initialized. Prev: {self.prev_ema:.2f}")
 
     def update(self, current_price):
         """
@@ -96,7 +110,10 @@ class CandleManager:
         Handles rollover if time has passed.
         Returns: (is_new_candle, current_df)
         """
-        now = datetime.now()
+        # Use timezone-aware datetime to match DataFrame index
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        now = datetime.now(ist)
         
         # Calculate the start time of the candle for the current time
         # E.g. 10:52:30 with 5min interval -> 10:50:00
