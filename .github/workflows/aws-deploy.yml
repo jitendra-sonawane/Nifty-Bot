@@ -45,9 +45,9 @@ jobs:
     permissions:
       id-token: write
       contents: read
-    strategy:
-      matrix:
-        service: [backend, frontend]
+    outputs:
+      backend-image-uri: ${{ steps.build-backend.outputs.image }}
+      frontend-image-uri: ${{ steps.build-frontend.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -62,31 +62,27 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v1
 
-      - name: Build, tag, and push image to Amazon ECR
-        id: build-image
+      - name: Build, tag, and push backend image to Amazon ECR
+        id: build-backend
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
           ECR_REPOSITORY: ${{ env.ECR_REPOSITORY_BACKEND }}
-          DOCKER_CONTEXT: backend
-        if: matrix.service == 'backend'
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f backend/Dockerfile ./backend
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
-      - name: Build, tag, and push image to Amazon ECR
-        id: build-image-frontend
+      - name: Build, tag, and push frontend image to Amazon ECR
+        id: build-frontend
         env:
           ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
           ECR_REPOSITORY: ${{ env.ECR_REPOSITORY_FRONTEND }}
-          DOCKER_CONTEXT: frontend
-        if: matrix.service == 'frontend'
         run: |
           docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG -f frontend/Dockerfile ./frontend
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
+          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
 
   deploy:
     needs: [build-and-push, test]
