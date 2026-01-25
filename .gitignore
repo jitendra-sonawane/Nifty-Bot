@@ -28,6 +28,7 @@ frontend.log
 !package.json
 !package-lock.json
 !tsconfig.json
+!task-definition.json
 *.csv
 *.csv.gz
 
@@ -60,8 +61,7 @@ Thumbs.db
 *.dockerfile.swp
 
 # Test files
-test_*.py
-check_*.py
+# check_*.py
 
 # Temporary files
 *.tmp

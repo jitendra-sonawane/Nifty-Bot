@@ -17,7 +17,29 @@ env:
   CONTAINER_NAME_FRONTEND: niftybot-frontend
 
 jobs:
+  test:
+    name: Run Test Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --system --dir backend
+
+      - name: Run tests
+        run: pytest backend/tests
+
   build-and-push:
+    needs: test
     name: Build and Push to ECR
     runs-on: ubuntu-latest
     permissions:
@@ -67,7 +89,7 @@ jobs:
           echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
   deploy:
-    needs: build-and-push
+    needs: [build-and-push, test]
     name: Deploy to ECS
     runs-on: ubuntu-latest
     permissions:
