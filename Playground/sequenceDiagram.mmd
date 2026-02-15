@@ -1,0 +1,66 @@
+sequenceDiagram
+    participant Main
+    participant EventBus
+    participant Stage0 as Stage 0 (Parallel)<br/>Indicators
+    participant RSI as calculate_rsi
+    participant MACD as calculate_macd
+    participant BB as calculate_bollinger
+    participant Stage1 as Stage 1 (Parallel)<br/>Signals
+    participant Signal as generate_signal
+    participant Trend as check_trend
+    participant Stage2 as Stage 2 (Sequential)<br/>Risk Checks
+    participant PosSize as check_position_size
+    participant StopLoss as check_stop_loss
+
+    Main->>EventBus: publish(MarketEvent)<br/>type: 'nifty_price'<br/>data: {price: 18500}
+    
+    Note over EventBus: Separate handlers by mode<br/>Sequential, Parallel, Staged
+    
+    Note over EventBus,BB: STAGE 0: Execute in Parallel
+    EventBus->>Stage0: Execute stage=0 handlers
+    
+    par Parallel Execution
+        Stage0->>RSI: calculate_rsi(event)
+        RSI->>RSI: Calculate RSI (1s)
+        RSI-->>Stage0: RSI: 65.2 ✓
+    and
+        Stage0->>MACD: calculate_macd(event)
+        MACD->>MACD: Calculate MACD (1s)
+        MACD-->>Stage0: MACD: 0.45 ✓
+    and
+        Stage0->>BB: calculate_bollinger(event)
+        BB->>BB: Calculate BB (1s)
+        BB-->>Stage0: BB: [17800, 18500, 19200] ✓
+    end
+    
+    Stage0-->>EventBus: Stage 0 Complete
+    
+    Note over EventBus,Trend: STAGE 1: Execute in Parallel<br/>(Waits for Stage 0)
+    EventBus->>Stage1: Execute stage=1 handlers
+    
+    par Parallel Execution
+        Stage1->>Signal: generate_buy_sell_signal(event)
+        Signal->>Signal: Generate signal (0.5s)
+        Signal-->>Stage1: Signal: SELL (Overbought) ✓
+    and
+        Stage1->>Trend: check_trend(event)
+        Trend->>Trend: Check trend (0.5s)
+        Trend-->>Stage1: Trend: Bearish ✓
+    end
+    
+    Stage1-->>EventBus: Stage 1 Complete
+    
+    Note over EventBus,StopLoss: STAGE 2: Execute Sequentially<br/>(Waits for Stage 1)
+    EventBus->>Stage2: Execute sequential handlers
+    
+    Stage2->>PosSize: check_position_size(event)
+    PosSize->>PosSize: Validate position (0.5s)
+    PosSize-->>Stage2: Position: Valid ✓
+    
+    Stage2->>StopLoss: check_stop_loss(event)
+    StopLoss->>StopLoss: Check stop loss (0.5s)
+    StopLoss-->>Stage2: Stop Loss: 18200 ✓
+    
+    Stage2-->>EventBus: Sequential Complete
+    
+    EventBus-->>Main: All callbacks completed ✅

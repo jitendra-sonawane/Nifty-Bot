@@ -19,6 +19,8 @@ env/
 # Logs
 *.log
 logs/
+learning/
+node play/
 server.log
 uvicorn.log
 frontend.log
@@ -62,7 +64,14 @@ Thumbs.db
 
 # Test files
 # check_*.py
+# Test files (scratch/debug scripts at root level)
+/test_*.py
+/check_*.py
+/backend/test_*.py
+/backend/check_*.py
 
 # Temporary files
 *.tmp
 *.bak
+.claude/
+

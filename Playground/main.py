@@ -1,46 +1,73 @@
-import os
-import time
-from dotenv import load_dotenv
-from market_data_streamer import MarketDataStreamer
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse
+from streamer import start_market_streamer
+import asyncio
+from typing import List
+from event_bus import event_bus, ExceptionMode, MarketEvent
 
-# Load environment variables
-load_dotenv()
+app = FastAPI(title="Simple data fetcher ")
 
-API_KEY = os.getenv("UPSTOX_API_KEY")
-ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN")
+# --- WebSocket Manager ---
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: List[WebSocket] = []
 
-def main():
-    if not API_KEY or not ACCESS_TOKEN:
-        print("Error: UPSTOX_API_KEY and UPSTOX_ACCESS_TOKEN must be set in .env file.")
-        return
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.append(websocket)
 
-    print("Initializing Market Data Streamer...")
-    streamer = MarketDataStreamer(API_KEY, ACCESS_TOKEN)
+    def disconnect(self, websocket: WebSocket):
+        self.active_connections.remove(websocket)
 
+    async def broadcast(self, message: dict):
+        for connection in self.active_connections:
+            try:
+                await connection.send_json(message)
+            except Exception:
+                # Handle dropped connections gracefully
+                pass
+
+manager = ConnectionManager()
+
+# --- Event Bus Bridge ---
+async def broadcast_volume_update(event: MarketEvent):
+    """Bridge: Event Bus -> WebSocket"""
+    await manager.broadcast(event.data)
+
+@app.on_event("startup")
+async def startup_event():
+    # Start the streamer
+    asyncio.create_task(start_market_streamer())
+    
+    # Subscribe WebSocket bridge to VOLUME_UPDATE events
+    event_bus.subscribe(
+        event_type="VOLUME_UPDATE",
+        callback=broadcast_volume_update,
+        mode=ExceptionMode.PARALLEL
+    )
+    
+    # Subscribe WebSocket bridge to VOLUME_SPIKE events
+    event_bus.subscribe(
+        event_type="VOLUME_SPIKE",
+        callback=broadcast_volume_update,
+        mode=ExceptionMode.PARALLEL
+    )
+
+@app.websocket("/ws/volume")
+async def websocket_endpoint(websocket: WebSocket):
+    await manager.connect(websocket)
     try:
-        # Connect to WebSocket
-        streamer.connect()
-        
-        # Give it a moment to connect
-        time.sleep(2)
-
-        # Subscribe to a sample instrument
-        # Example: NSE_INDEX|Nifty 50 is 'NSE_INDEX|Nifty 50' or similar key.
-        # Ideally, we should fetch valid keys from the API, but for now we'll use a placeholder or a common one.
-        # Let's try subscribing to Nifty 50 if we know the key, or just wait for connection.
-        # Common key format: "NSE_INDEX|Nifty 50"
-        sample_keys = ["NSE_INDEX|Nifty 50"] 
-        streamer.subscribe(sample_keys)
-
-        print("Press Ctrl+C to exit...")
         while True:
-            time.sleep(1)
+            await websocket.receive_text() # Keep connection alive
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
 
-    except KeyboardInterrupt:
-        print("\nStopping streamer...")
-        streamer.disconnect()
-    except Exception as e:
-        print(f"An error occurred: {e}")
+@app.get("/")
+def read_root():
+    # Serve the HTML file directly (for simplicity)
+    with open("index.html", "r") as f:
+        return HTMLResponse(content=f.read())
 
-if __name__ == "__main__":
-    main()
+@app.get("/get_pcr")
+def get_pcr():
+    return {"PCR": "1.2"}

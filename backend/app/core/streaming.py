@@ -115,6 +115,23 @@ class CandleManager:
         ist = timezone(timedelta(hours=5, minutes=30))
         now = datetime.now(ist)
         
+        # Market Hours Check (09:15 to 15:30 IST)
+        # We allow a small buffer (e.g. up to 15:32) for final ticks
+        market_start = datetime.strptime("09:15", "%H:%M").time()
+        market_end = datetime.strptime("15:35", "%H:%M").time() # Allow small buffer for closing ticks
+        current_time_ist = now.time()
+        
+        is_market_open = market_start <= current_time_ist <= market_end
+        
+        if not is_market_open:
+            # Check if we are just initializing (allow first run regardless of time to populate state)
+            if self.df.empty:
+                 logger.info("Initializing CandleManager outside market hours with initial data point.")
+            else:
+                 # Outside market hours: Do not create new candles or update existing ones
+                 # This prevents "ghost candles" e.g. at 17:00 using 15:30 price
+                 return False, self.df
+
         # Calculate the start time of the candle for the current time
         # E.g. 10:52:30 with 5min interval -> 10:50:00
         minute_block = (now.minute // self.interval_minutes) * self.interval_minutes

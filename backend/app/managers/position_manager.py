@@ -8,13 +8,15 @@ class Position:
     """Represents a single open position with entry/exit parameters."""
     
     def __init__(self, instrument_key: str, entry_price: float, quantity: int, 
-                 position_type: str, stop_loss_pct: float = 0.30, target_multiplier: float = 1.5,
+                 position_type: str, strike: Optional[float] = None, stop_loss_pct: float = 0.30, target_multiplier: float = 1.5,
                  trailing_activation_pct: float = 1.0, trailing_pct: float = 0.5):
         self.id = str(uuid.uuid4())
         self.instrument_key = instrument_key
         self.entry_price = entry_price
         self.quantity = quantity
         self.position_type = position_type  # "CE" or "PE"
+        self.strike = strike
+        self.current_price = entry_price  # Tracks live option price
         self.entry_time = datetime.datetime.now()
         
         # Calculate stop loss and target
@@ -28,17 +30,23 @@ class Position:
         self.trailing_sl_activated = False
         
     def to_dict(self):
+        pnl = (self.current_price - self.entry_price) * self.quantity
+        pnl_pct = ((self.current_price - self.entry_price) / self.entry_price * 100) if self.entry_price else 0
         return {
             "id": self.id,
             "instrument_key": self.instrument_key,
             "entry_price": self.entry_price,
+            "current_price": round(self.current_price, 2),
             "quantity": self.quantity,
             "position_type": self.position_type,
+            "strike": self.strike,
             "stop_loss": round(self.stop_loss, 2),
             "target": round(self.target, 2),
             "trailing_sl": round(self.trailing_sl, 2) if self.trailing_sl else None,
             "trailing_sl_activated": bool(self.trailing_sl_activated),
-            "entry_time": self.entry_time.isoformat()
+            "entry_time": self.entry_time.isoformat(),
+            "unrealized_pnl": round(pnl, 2),
+            "unrealized_pnl_pct": round(pnl_pct, 2),
         }
     
     def update_trailing_stop(self, current_price: float):
@@ -105,7 +113,8 @@ class PositionManager:
                             instrument_key=pos_data["instrument_key"],
                             entry_price=pos_data["entry_price"],
                             quantity=pos_data["quantity"],
-                            position_type=pos_data["position_type"]
+                            position_type=pos_data["position_type"],
+                            strike=pos_data.get("strike")
                         )
                         pos.id = pos_data["id"]
                         pos.stop_loss = pos_data["stop_loss"]
@@ -114,6 +123,7 @@ class PositionManager:
                         pos.trailing_sl_activated = pos_data.get("trailing_sl_activated", False)
                         pos.trailing_activation_pct = pos_data.get("trailing_activation_pct", 1.0)
                         pos.trailing_pct = pos_data.get("trailing_pct", 0.5)
+                        pos.current_price = pos_data.get("current_price", pos_data["entry_price"])
                         pos.entry_time = datetime.datetime.fromisoformat(pos_data["entry_time"])
                         self.positions[pos.id] = pos
             except Exception as e:
@@ -130,17 +140,26 @@ class PositionManager:
         except Exception as e:
             print(f"Error saving positions: {e}")
     
-    def open_position(self, instrument_key: str, entry_price: float, 
-                     quantity: int, position_type: str) -> Position:
-        """Open a new position."""
+    def open_position(self, instrument_key: str, entry_price: float,
+                     quantity: int, position_type: str, strike: Optional[float] = None,
+                     is_expiry_day: bool = False) -> Position:
+        """Open a new position. On expiry day, SL is tightened automatically."""
+        from app.core.config import Config
+
         # Validate instrument_key format
         if not self._is_valid_instrument_key(instrument_key):
             raise ValueError(f"❌ Invalid instrument_key format: {instrument_key}. Expected format: NSE_FO|xxxxx")
-        
-        position = Position(instrument_key, entry_price, quantity, position_type)
+
+        # Tighten SL on expiry day (0DTE gamma risk)
+        sl_pct = 0.30  # default
+        if is_expiry_day:
+            sl_pct *= Config.EXPIRY_DAY.get("sl_tightening_factor", 0.6)  # 30% * 0.6 = 18%
+
+        position = Position(instrument_key, entry_price, quantity, position_type, strike=strike, stop_loss_pct=sl_pct)
         self.positions[position.id] = position
         self._save_positions()
-        print(f"📈 Position Opened: {position_type} @ {entry_price} (SL: {position.stop_loss}, Target: {position.target})")
+        expiry_tag = " [0DTE: tightened SL]" if is_expiry_day else ""
+        print(f"📈 Position Opened{expiry_tag}: {position_type} @ {entry_price} (SL: {position.stop_loss:.2f}, Target: {position.target:.2f})")
         return position
     
     def _is_valid_instrument_key(self, instrument_key: str) -> bool:
@@ -200,6 +219,9 @@ class PositionManager:
             current_price = current_prices.get(position.instrument_key)
             if not current_price:
                 continue
+            
+            # Update live option price on the position
+            position.current_price = current_price
             
             # Update trailing stop
             position.update_trailing_stop(current_price)

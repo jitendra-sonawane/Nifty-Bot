@@ -2,11 +2,15 @@ import asyncio
 import time
 import logging
 import threading
-from typing import List, Callable, Dict, Optional
+from typing import List, Callable, Dict, Optional, TYPE_CHECKING
 from app.core.config import Config
 from app.data.data_fetcher import DataFetcher
 from app.core.greeks import GreeksCalculator
 from app.core.pcr_calculator import PCRCalculator
+from app.data.nifty50_api import NIFTY50_STOCKS
+
+if TYPE_CHECKING:
+    from app.intelligence import IntelligenceEngine
 
 # Import SDK's built-in market data streamer
 try:
@@ -18,11 +22,20 @@ except ImportError:
 from app.core.logger_config import logger
 
 class MarketDataManager:
-    def __init__(self, data_fetcher: DataFetcher, access_token: str):
+    def __init__(
+        self,
+        data_fetcher: DataFetcher,
+        access_token: str,
+        intelligence_engine: Optional["IntelligenceEngine"] = None,
+    ):
         self.data_fetcher = data_fetcher
         self.access_token = access_token
         self.nifty_key = Config.SYMBOL_NIFTY_50
         self.pcr_calc = PCRCalculator()
+        self.intelligence_engine = intelligence_engine  # Optional plug-in
+
+        # Bid/Ask depth cache: instrument_key → {"bids": [...], "asks": [...]}
+        self.bid_ask_cache: Dict[str, Dict] = {}
         
         # State
         self.current_price = 0.0
@@ -35,6 +48,9 @@ class MarketDataManager:
         self.previous_close = None
         self.market_movement = None  # Points up/down from previous close
 
+        # Price Cache for Real-time PnL
+        self.instrument_prices: Dict[str, float] = {}  # key -> price
+        self.subscribed_keys: set = set() # Track all keys we are subscribed to
         
         # Option instruments for WebSocket streaming (ATM options)
         self.option_ce_key = None
@@ -43,12 +59,20 @@ class MarketDataManager:
         self.option_pe_price = 0.0
         self.option_expiry = None
         
+        # Nifty 50 Heatmap Data
+        self.nifty50_quotes = {}  # Map: symbol -> { price, change, percent_change }
+        self.nifty50_isins = {}   # Map: instrument_key -> symbol
+
+        
         # PCR Options - WebSocket subscriptions for all options in strike range
         self.pcr_option_keys = []  # List of all option instrument keys for PCR
         self.pcr_option_metadata = {}  # Map: instrument_key -> {strike, option_type, trading_symbol}
         self.pcr_oi_data = {}  # Map: instrument_key -> open_interest value
         self.last_pcr_calculation = 0  # Timestamp of last PCR calculation
         self.pcr_calculation_interval = 5  # Calculate PCR every 5 seconds (from WebSocket OI data)
+        self._last_greeks_fallback_time = 0.0  # Throttle fallback greeks fetch (avoid hammering API)
+        self._last_vix_fetch = 0.0  # Timestamp of last VIX API call
+        self._vix_cache_interval = 30.0  # Fetch VIX at most every 30 seconds
         
         # Event Callbacks
         self.on_price_update: List[Callable] = []
@@ -64,9 +88,11 @@ class MarketDataManager:
         # Tasks
         self.tasks = []
         self.is_running = False
+        self.main_loop = None  # To capture the main event loop
 
     async def start(self):
         self.is_running = True
+        self.main_loop = asyncio.get_running_loop() # Capture loop here
         logger.info("Starting MarketDataManager...")
         logger.info(f"  - NIFTY Key: {self.nifty_key}")
         logger.info(f"  - Access Token Present: {bool(self.access_token)}")
@@ -86,7 +112,8 @@ class MarketDataManager:
             current_nifty_price = self.data_fetcher.get_current_price(self.nifty_key)
             if current_nifty_price and current_nifty_price > 0:
                 initial_price = current_nifty_price
-                logger.info(f"📊 Using current Nifty price for ATM: ₹{initial_price}")
+                self.current_price = current_nifty_price
+                logger.info(f"📊 Using current Nifty price for ATM and Initial State: ₹{initial_price}")
             else:
                 initial_price = self.current_price if self.current_price > 0 else 24000
                 logger.warning(f"⚠️ Using fallback price for ATM: ₹{initial_price}")
@@ -113,6 +140,16 @@ class MarketDataManager:
             
             # Build comprehensive instrument keys array
             instrument_keys = [self.nifty_key]
+            
+            # Add Nifty 50 Stocks
+            nifty50_keys = []
+            for symbol, isin in NIFTY50_STOCKS.items():
+                key = f"NSE_EQ|{isin}"
+                nifty50_keys.append(key)
+                self.nifty50_isins[key] = symbol
+            
+            instrument_keys.extend(nifty50_keys)
+            logger.info(f"✅ Added {len(nifty50_keys)} Nifty 50 stocks to subscription list")
             
             # Add ATM options
             if self.option_ce_key and self.option_pe_key:
@@ -226,15 +263,103 @@ class MarketDataManager:
                         elif "ltp" in feed:
                             price = feed["ltp"]
                         
-                        # Store OI data for PCR options
+                        # store OI data for PCR options
                         if oi is not None and key in self.pcr_option_metadata:
                             self.pcr_oi_data[key] = float(oi)
                             # logger.debug(f"📊 OI Update: {key} -> {oi}")  # Too noisy for production, useful for debug
-                        
+
+                        # Extract bid/ask depth from fullFeed for order book intelligence
+                        if "fullFeed" in feed:
+                            self._extract_bid_ask(key, feed["fullFeed"])
+
+                        # CACHE PRICE for PnL
+                        if price is not None:
+                            try:
+                                price_val = float(price)
+                                self.instrument_prices[key] = price_val
+                                # Also update nifty50_quotes if applicable
+                            except Exception as e:
+                                logger.error(f"Error caching price for {key}: {e}")
+                                
                         # Debug logging for PCR options (sample)
                         if oi is not None and key in self.pcr_option_metadata and len(self.pcr_oi_data) % 10 == 0:
                              logger.debug(f"📊 PCR OI Update: {key} -> {oi} (Total tracked: {len(self.pcr_oi_data)})")
                         
+                        # Nifty 50 Stock Update
+                        if key in self.nifty50_isins:
+                            symbol = self.nifty50_isins[key]
+                            
+                            # Get existing data or defaults
+                            current_data = self.nifty50_quotes.get(symbol, {
+                                "symbol": symbol,
+                                "price": 0.0,
+                                "change": 0.0,
+                                "changePercent": 0.0,
+                                "open": 0.0,
+                                "high": 0.0,
+                                "low": 0.0,
+                                "close": 0.0,
+                                "volume": 0
+                            })
+                            
+                            # Extract LTP
+                            new_price = price if price is not None else current_data["price"]
+                            if new_price:
+                                current_data["price"] = float(new_price)
+
+                            # Extract OHLC and Close
+                            close_price = current_data["close"]
+                            open_price = current_data["open"]
+                            high_price = current_data["high"]
+                            low_price = current_data["low"]
+                            
+                            if "fullFeed" in feed:
+                                ff = feed.get("fullFeed", {})
+                                mff = ff.get("marketFF", {})
+                                
+                                # Try to get OHLC
+                                if "ohlc" in mff:
+                                    ohlc = mff["ohlc"]
+                                    if "open" in ohlc: open_price = float(ohlc["open"])
+                                    if "high" in ohlc: high_price = float(ohlc["high"])
+                                    if "low" in ohlc: low_price = float(ohlc["low"])
+                                    if "close" in ohlc: close_price = float(ohlc["close"])
+                                
+                                # Try to get Close from LTPC if not in OHLC
+                                if "ltpc" in mff and "cp" in mff["ltpc"]:
+                                    close_price = float(mff["ltpc"]["cp"])
+
+                            # Try to get Close from LTPC outside fullFeed
+                            if "ltpc" in feed and "cp" in feed["ltpc"]:
+                                close_price = float(feed["ltpc"]["cp"])
+
+                            # Calculate Change
+                            if close_price > 0 and current_data["price"] > 0:
+                                change = current_data["price"] - close_price
+                                change_percent = (change / close_price) * 100
+                                current_data["change"] = round(change, 2)
+                                current_data["changePercent"] = round(change_percent, 2)
+                                current_data["close"] = close_price
+                            
+                            # Update OHLC
+                            current_data["open"] = open_price
+                            current_data["high"] = high_price
+                            current_data["low"] = low_price
+                            
+                            # Ensure High/Low match current price if 0 (handling initial state)
+                            if current_data["price"] > 0:
+                                if current_data["high"] == 0 or current_data["price"] > current_data["high"]:
+                                    current_data["high"] = current_data["price"]
+                                if current_data["low"] == 0 or current_data["price"] < current_data["low"]:
+                                    current_data["low"] = current_data["price"]
+                                if current_data["open"] == 0:
+                                     current_data["open"] = current_data["price"]
+
+                            self.nifty50_quotes[symbol] = current_data
+                            # After every stock update push breadth + book to intelligence
+                            self._push_intelligence_updates()
+
+
                         if price is not None:
                             price = float(price)
                             
@@ -252,10 +377,9 @@ class MarketDataManager:
                                     # ATM has changed, schedule async resubscription
                                     logger.info(f"🔔 ATM strike changing: {self.atm_strike} → {new_atm}")
                                     try:
-                                        loop = asyncio.get_event_loop()
-                                        if loop.is_running():
+                                        if self.main_loop and self.main_loop.is_running():
                                             # Schedule the coroutine to run in the event loop
-                                            asyncio.run_coroutine_threadsafe(self._resubscribe_atm_options(new_atm), loop)
+                                            asyncio.run_coroutine_threadsafe(self._resubscribe_atm_options(new_atm), self.main_loop)
                                         else:
                                             logger.warning("⚠️ Event loop not running, cannot resubscribe ATM options")
                                     except RuntimeError:
@@ -267,10 +391,14 @@ class MarketDataManager:
                                 movement_str = f"{self.market_movement:+.2f}" if self.market_movement else "N/A"
                                 logger.info(f"💰 Nifty price: ₹{price:.2f} (ATM: {self.atm_strike}) | Movement: {movement_str}")
                                 
-                                # Emit callback
-                                for callback in self.on_price_update:
+                                # Emit callback (copy list to avoid mutation during iteration)
+                                for callback in list(self.on_price_update):
                                     if asyncio.iscoroutinefunction(callback):
-                                        logger.debug(f"Skipping async callback from thread context")
+                                        if self.main_loop:
+                                            # Use proper threadsafe scheduling
+                                            asyncio.run_coroutine_threadsafe(callback(price), self.main_loop)
+                                        else:
+                                            logger.warning(f"Skipping async callback - no main loop captured")
                                     else:
                                         try:
                                             callback(price)
@@ -294,9 +422,73 @@ class MarketDataManager:
         except Exception as e:
             logger.error(f"Error processing streamer message: {e}", exc_info=True)
     
+    def _extract_bid_ask(self, key: str, full_feed: dict) -> None:
+        """
+        Extract 5-level bid/ask depth from a decoded V3 fullFeed dict and
+        cache it for the OrderBook intelligence module.
+
+        Upstox V3 full-mode protobuf decodes to:
+          fullFeed.marketFF.bidAskQuote  (list of BidAskQuote objects)
+        Each entry: { bidQty, bidPrice, askQty, askPrice }
+        """
+        try:
+            mff = full_feed.get("marketFF", {})
+            raw_depth = mff.get("bidAskQuote", [])
+            if not raw_depth:
+                return
+
+            bids = []
+            asks = []
+            for entry in raw_depth:
+                bid_price = entry.get("bidPrice")
+                bid_qty   = entry.get("bidQty")
+                ask_price = entry.get("askPrice")
+                ask_qty   = entry.get("askQty")
+                if bid_price is not None and bid_qty is not None:
+                    bids.append({"price": float(bid_price), "qty": float(bid_qty)})
+                if ask_price is not None and ask_qty is not None:
+                    asks.append({"price": float(ask_price), "qty": float(ask_qty)})
+
+            if bids or asks:
+                self.bid_ask_cache[key] = {"bids": bids, "asks": asks}
+        except Exception as e:
+            logger.debug(f"bid/ask extraction error for {key}: {e}")
+
+    def _push_intelligence_updates(self) -> None:
+        """
+        Push the latest market snapshots to the intelligence engine.
+        Called after nifty50 quotes are updated (once per tick cycle).
+        """
+        if not self.intelligence_engine:
+            return
+        try:
+            self.intelligence_engine.update({
+                "nifty50_quotes":      dict(self.nifty50_quotes),
+                "bid_ask":             dict(self.bid_ask_cache),
+                "option_ce_key":       self.option_ce_key,
+                "option_pe_key":       self.option_pe_key,
+                "greeks":              self.latest_greeks,
+                "pcr_oi_data":         dict(self.pcr_oi_data),
+                "pcr_option_metadata": dict(self.pcr_option_metadata),
+                "current_price":       self.current_price,
+            })
+        except Exception as e:
+            logger.debug(f"Intelligence push error: {e}")
+
     def _on_streamer_open(self):
         """Called when streamer connection opens."""
         logger.info("✅ Market data stream connected")
+        
+        # Re-subscribe to tracked instruments (active positions)
+        if self.subscribed_keys:
+            logger.info(f"🔄 Re-subscribing to {len(self.subscribed_keys)} tracked instruments...")
+            try:
+                # Convert set to list
+                keys_to_subscribe = list(self.subscribed_keys)
+                self.streamer.subscribe(keys_to_subscribe, "full")
+                logger.info("✅ Re-subscription successful")
+            except Exception as e:
+                logger.error(f"❌ Error re-subscribing: {e}")
     
     def _on_streamer_error(self, error):
         """Called when streamer has an error."""
@@ -368,10 +560,12 @@ class MarketDataManager:
                 for error in pe_validation['errors']:
                     logger.error(f"   PE Error: {error}")
             
-            # Build Greeks data structure
+            # Build Greeks data structure (include instrument keys for trade execution)
             self.latest_greeks = {
                 'atm_strike': self.atm_strike,
                 'expiry_date': str(self.option_expiry),
+                'ce_instrument_key': self.option_ce_key,
+                'pe_instrument_key': self.option_pe_key,
                 'ce': {
                     'price': self.option_ce_price,
                     'iv': ce_iv,
@@ -390,10 +584,14 @@ class MarketDataManager:
             
             # Emit update to callbacks (similar to PCR updates)
             data = {'greeks': self.latest_greeks}
-            for callback in self.on_market_data_update:
+            for callback in list(self.on_market_data_update):
                 if asyncio.iscoroutinefunction(callback):
                     try:
-                        asyncio.create_task(callback(data))
+                        if self.main_loop:
+                            asyncio.run_coroutine_threadsafe(callback(data), self.main_loop)
+                        else:
+                             # Fallback if loop not captured (shouldn't happen if started correctly)
+                             asyncio.create_task(callback(data))
                     except Exception as e:
                         logger.error(f"Error in async greeks callback: {e}")
                 else:
@@ -566,9 +764,13 @@ class MarketDataManager:
                         logger.warning(f"⚠️ PCR calculation skipped: CE OI is zero")
                     
                     # Fetch VIX (still using HTTP - no WebSocket alternative)
-                    loop = asyncio.get_running_loop()
-                    vix = await loop.run_in_executor(None, self.data_fetcher.get_india_vix)
-                    self.latest_vix = vix
+                    # Cached: only fetch every 30 seconds to avoid hammering the API
+                    if current_time - self._last_vix_fetch >= self._vix_cache_interval:
+                        loop = asyncio.get_running_loop()
+                        vix = await loop.run_in_executor(None, self.data_fetcher.get_india_vix)
+                        self.latest_vix = vix
+                        self._last_vix_fetch = current_time
+                    vix = self.latest_vix
                     
                     # Calculate sentiment
                     self._calculate_sentiment()
@@ -583,12 +785,12 @@ class MarketDataManager:
                         "previous_close": self.previous_close,
                         "market_movement": self.market_movement
                     }
-                    for callback in self.on_market_data_update:
+                    for callback in list(self.on_market_data_update):
                         if asyncio.iscoroutinefunction(callback):
                             asyncio.create_task(callback(data))
                         else:
                             callback(data)
-                            
+
             except Exception as e:
                 logger.error(f"Error in WebSocket PCR loop: {e}", exc_info=True)
             
@@ -614,8 +816,8 @@ class MarketDataManager:
         while self.is_running:
             if self.current_price != last_price and self.current_price > 0:
                 last_price = self.current_price
-                # Emit async callbacks
-                for callback in self.on_price_update:
+                # Emit async callbacks (copy to avoid mutation during iteration)
+                for callback in list(self.on_price_update):
                     if asyncio.iscoroutinefunction(callback):
                         try:
                             await callback(self.current_price)
@@ -698,16 +900,47 @@ class MarketDataManager:
                     "previous_close": self.previous_close,
                     "market_movement": self.market_movement
                 }
-                for callback in self.on_market_data_update:
+                for callback in list(self.on_market_data_update):
                     if asyncio.iscoroutinefunction(callback):
                         asyncio.create_task(callback(data))
                     else:
                         callback(data)
-                        
+
             except Exception as e:
                 logger.error(f"Error in PCR loop: {e}", exc_info=True)
             
-            await asyncio.sleep(30)
+            await asyncio.sleep(5)  # Check every 5 seconds
+
+    def subscribe_instruments(self, keys: List[str]):
+        """
+        Subscribe to a list of instrument keys for real-time updates.
+        Used for tracking PnL of open positions.
+        """
+        if not self.streamer:
+            logger.warning("⚠️ Streamer not initialized, cannot subscribe")
+            return
+            
+        # Filter out keys already subscribed
+        new_keys = [k for k in keys if k not in self.subscribed_keys]
+        
+        if not new_keys:
+            return
+            
+        try:
+            # Add to set first
+            self.subscribed_keys.update(new_keys)
+            
+            # Subscribe
+            self.streamer.subscribe(new_keys, "full")
+            logger.info(f"✅ Subscribed to {len(new_keys)} new instruments for PnL tracking")
+            logger.debug(f"   Keys: {new_keys}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error subscribing to instruments: {e}")
+
+    def get_price(self, key: str) -> float:
+        """Get cached price for an instrument key."""
+        return self.instrument_prices.get(key, 0.0)
 
     async def _greeks_loop(self):
         """Fetches Greeks periodically. (DEPRECATED: Using WebSocket streaming)"""
@@ -733,8 +966,8 @@ class MarketDataManager:
         pcr_sentiment = None
         if self.latest_pcr:
             pcr_sentiment = self.pcr_calc.get_sentiment(self.latest_pcr)
-            if pcr_sentiment == "EXTREME_BEARISH": score += 20
-            elif pcr_sentiment == "BEARISH": score += 10
+            if pcr_sentiment == "EXTREME_BEARISH": score -= 20
+            elif pcr_sentiment == "BEARISH": score -= 10
             elif pcr_sentiment == "NEUTRAL": score += 0
             elif pcr_sentiment == "BULLISH": score += 10
             elif pcr_sentiment == "EXTREME_BULLISH": score += 20
@@ -791,6 +1024,31 @@ class MarketDataManager:
             logger.error(f"Error fetching previous close: {e}")
 
     def get_market_state(self):
+        # Fallback: if WebSocket hasn't delivered option ticks yet, fetch option quotes once (throttled)
+        # so strategy can run and executor has greeks + instrument keys.
+        if (
+            self.latest_greeks is None
+            and self.option_ce_key
+            and self.option_pe_key
+            and self.current_price > 0
+            and (time.time() - self._last_greeks_fallback_time) >= 5.0
+        ):
+            self._last_greeks_fallback_time = time.time()
+            try:
+                quotes = self.data_fetcher.get_quotes([self.option_ce_key, self.option_pe_key])
+                if quotes:
+                    ce_quote = quotes.get(self.option_ce_key) or {}
+                    pe_quote = quotes.get(self.option_pe_key) or {}
+                    ce_price = float(ce_quote.get("last_price") or 0)
+                    pe_price = float(pe_quote.get("last_price") or 0)
+                    if ce_price > 0 and pe_price > 0:
+                        self.option_ce_price = ce_price
+                        self.option_pe_price = pe_price
+                        self._calculate_and_emit_greeks()
+                        if self.latest_greeks:
+                            logger.debug("Greeks populated via fallback (REST quotes)")
+            except Exception as e:
+                logger.debug(f"Greeks fallback fetch failed: {e}")
         return {
             "current_price": self.current_price,
             "atm_strike": self.atm_strike,

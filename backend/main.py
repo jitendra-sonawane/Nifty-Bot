@@ -13,6 +13,15 @@ from app.core.market_data import MarketDataManager
 from app.core.strategy_runner import StrategyRunner
 from app.core.trade_executor import TradeExecutor
 
+# ── Intelligence Engine ────────────────────────────────────────────────────
+from app.intelligence import IntelligenceEngine
+from app.intelligence.market_regime import MarketRegimeModule
+from app.intelligence.iv_rank import IVRankModule
+from app.intelligence.order_book import OrderBookModule
+from app.intelligence.market_breadth import MarketBreadthModule
+from app.intelligence.portfolio_greeks import PortfolioGreeksModule
+from app.intelligence.oi_analysis import OIAnalysisModule
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -22,18 +31,21 @@ class TradingBot:
         self.is_running = False
         self.status_callback = None
         self.latest_log = []
-        
+
         # Components
         self.market_data: Optional[MarketDataManager] = None
         self.strategy_runner: Optional[StrategyRunner] = None
         self.trade_executor: Optional[TradeExecutor] = None
-        
+
+        # Intelligence Engine
+        self.intelligence_engine: Optional[IntelligenceEngine] = None
+
         # Legacy accessors for API
         self.order_manager = None
         self.position_manager = None
         self.risk_manager = None
         self.data_fetcher = None
-        
+
         self.nifty_key = Config.SYMBOL_NIFTY_50
         self.timeframe = Config.TIMEFRAME
         self.access_token = Config.ACCESS_TOKEN
@@ -47,28 +59,48 @@ class TradingBot:
 
     def initialize(self):
         self.log("Initializing Upstox Trading Bot (Async Architecture)...")
-        
+
         # Auth
         if not self.access_token:
             self.log("Access Token not found in .env")
-        
-        # Initialize Base Components
+
+        # ── Base Components ────────────────────────────────────────────────
         self.data_fetcher = DataFetcher(Config.API_KEY, self.access_token)
         strategy_engine = StrategyEngine()
         self.order_manager = OrderManager(self.access_token)
         self.position_manager = PositionManager()
-        
+
         initial_capital = self.order_manager.paper_manager.get_balance()
         self.risk_manager = RiskManager(initial_capital=initial_capital)
-        
-        # Initialize Core Modules
-        self.market_data = MarketDataManager(self.data_fetcher, self.access_token)
-        self.strategy_runner = StrategyRunner(strategy_engine, self.data_fetcher)
+
+        # ── Intelligence Engine ────────────────────────────────────────────
+        # Register all modules here. To add a new module, just register it.
+        # To disable one, call self.intelligence_engine.disable("<name>").
+        self.intelligence_engine = IntelligenceEngine()
+        self.intelligence_engine.register(MarketRegimeModule())
+        self.intelligence_engine.register(IVRankModule())
+        self.intelligence_engine.register(OrderBookModule())
+        self.intelligence_engine.register(MarketBreadthModule())
+        self.intelligence_engine.register(PortfolioGreeksModule())
+        self.intelligence_engine.register(OIAnalysisModule())
+        self.log("Intelligence engine initialized with 6 modules.")
+
+        # ── Core Modules (pass intelligence_engine for data feeding) ───────
+        self.market_data = MarketDataManager(
+            self.data_fetcher,
+            self.access_token,
+            intelligence_engine=self.intelligence_engine,
+        )
+        self.strategy_runner = StrategyRunner(
+            strategy_engine,
+            self.data_fetcher,
+            intelligence_engine=self.intelligence_engine,
+        )
         self.trade_executor = TradeExecutor(self.order_manager, self.position_manager, self.risk_manager)
-        
+
         # Wire up events
         self.market_data.on_price_update.append(self._on_price_update)
-        
+
         self.log("Loading instruments...")
         try:
             self.data_fetcher.load_instruments()
@@ -82,16 +114,21 @@ class TradingBot:
         
         self.is_running = True
         self.log("Starting Bot...")
-        
+
+        # Reset daily state for intelligence modules
+        if self.intelligence_engine:
+            self.intelligence_engine.reset_daily()
+            self.log("Intelligence modules reset for new session.")
+
         # Start Components
         if self.market_data:
             await self.market_data.start()
         if self.strategy_runner:
             self.strategy_runner.start()
-        
+
         # Start periodic strategy update task (runs even when market is closed)
         asyncio.create_task(self._periodic_strategy_update())
-            
+
         self.log("Bot Started.")
 
     async def stop(self):
@@ -126,20 +163,35 @@ class TradingBot:
             if signal_data and self.trade_executor:
                 await self.trade_executor.execute_trade(signal_data)
                 
-            # 4. Check Exits
-            # We need current prices for all positions
-            # Optimization: Only fetch if we have positions
-            if self.position_manager and self.position_manager.get_position_count() > 0:
-                # We can use the data fetcher to get quotes
-                # For now, let's assume we can get them.
-                # Ideally MarketData should handle this too.
+            # 3b. Push positions to PortfolioGreeks intelligence module
+            if self.intelligence_engine and self.position_manager:
                 positions = self.position_manager.get_positions()
-                keys = [p['instrument_key'] for p in positions]
-                if keys and self.data_fetcher:
-                    quotes = self.data_fetcher.get_quotes(keys)
-                    current_prices = {k: v.get('last_price', 0) for k, v in quotes.items()}
-                    if self.trade_executor:
-                        await self.trade_executor.check_exits(current_prices)
+                self.intelligence_engine.update({
+                    "positions": positions,
+                    "greeks":    market_state.get("greeks"),
+                })
+
+            # 4. Check Exits and Ensure Subscription
+            if self.position_manager and self.position_manager.get_position_count() > 0:
+                positions = self.position_manager.get_positions()
+                if positions:
+                    # Collect all keys
+                    keys = [p['instrument_key'] for p in positions]
+                    
+                    # Ensure subscription for real-time PnL
+                    if self.market_data:
+                        self.market_data.subscribe_instruments(keys)
+                        
+                        # Get cached prices for exit check
+                        current_prices = {}
+                        for key in keys:
+                            price = self.market_data.get_price(key)
+                            if price > 0:
+                                current_prices[key] = price
+                                
+                        # Use cached prices for exits
+                        if self.trade_executor and current_prices:
+                            await self.trade_executor.check_exits(current_prices)
 
             # 5. Broadcast Status
             if self.status_callback:
@@ -208,17 +260,34 @@ class TradingBot:
         # Aggregate status from components
         market_state = self.market_data.get_market_state() if self.market_data else {}
         strategy_data = self.strategy_runner.latest_strategy_data if self.strategy_runner else {}
-        
-        # Calculate unrealized PnL from paper trading manager
+
+        # Unrealized PnL: in paper mode positions live in position_manager (set below after price update).
+        # Otherwise use paper_manager if it holds positions (e.g. multi-leg strategies).
         unrealized_pnl = 0.0
-        if self.order_manager and self.order_manager.paper_manager:
+        in_paper_with_positions = (
+            self.order_manager and self.order_manager.trading_mode == "PAPER"
+            and self.position_manager and self.position_manager.positions
+        )
+        if not in_paper_with_positions and self.order_manager and self.order_manager.paper_manager:
+            # Use cached prices from MarketDataManager for speed
             current_prices = {}
             positions = self.order_manager.paper_manager.get_positions()
             if positions:
-                keys = [p['instrument_key'] for p in positions]
-                quotes = self.data_fetcher.get_quotes(keys) if self.data_fetcher else {}
-                for key, quote in quotes.items():
-                    current_prices[key] = quote.get('last_price', 0)
+                keys = []
+                for p in positions:
+                     # Extract keys from legs or single position
+                     if p.get("legs"):
+                         keys.extend([leg.get("instrument_key") for leg in p["legs"]])
+                     elif p.get("instrument_key"):
+                         keys.append(p.get("instrument_key"))
+                
+                # Get prices from cache
+                if self.market_data:
+                    for key in keys:
+                        price = self.market_data.get_price(key)
+                        if price > 0:
+                            current_prices[key] = price
+            
             unrealized_pnl = self.order_manager.paper_manager.get_pnl(current_prices)
         
         # Get Greeks from market_state or strategy_data
@@ -243,20 +312,57 @@ class TradingBot:
             "filters": strategy_data.get("filters", {}),
             "volume_ratio": strategy_data.get("volume_ratio", 0),
             "atr_pct": strategy_data.get("atr_pct", 0),
+            "progress": strategy_data.get("progress", None),
         }
         
+        # Update current_price on each position before serializing (real-time P&L)
+        if self.position_manager:
+            positions_objs = self.position_manager.positions
+            if positions_objs:
+                # Use cached prices
+                for pos in positions_objs.values():
+                    if self.market_data:
+                        price = self.market_data.get_price(pos.instrument_key)
+                        if price > 0:
+                            pos.current_price = price
+                            
+                # In paper mode, aggregate unrealized P&L from position_manager (paper_manager has no positions)
+                if self.order_manager and self.order_manager.trading_mode == "PAPER":
+                    unrealized_pnl = sum(
+                        (p.current_price - p.entry_price) * p.quantity for p in positions_objs.values()
+                    )
+        
+        # Collect intelligence snapshot for frontend display
+        intelligence_snapshot = {}
+        if self.intelligence_engine:
+            intelligence_snapshot = self.intelligence_engine.get_context()
+
+        # Unified positions: single-leg (PositionManager) + multi-leg (PaperTradingManager)
+        all_positions = self.position_manager.get_positions() if self.position_manager else []
+        paper_mgr = self.order_manager.paper_manager if self.order_manager else None
+        if paper_mgr:
+            # Add multi-leg positions that aren't already covered by position_manager
+            for pos in paper_mgr.get_open_positions():
+                all_positions.append(pos)
+
+        # Unified trade history from paper_mgr (ground truth)
+        unified_trade_history = paper_mgr.get_trade_history(limit=20) if paper_mgr else []
+        if not unified_trade_history and self.trade_executor:
+            unified_trade_history = self.trade_executor.trade_history[-10:]
+
         status = {
             "is_running": self.is_running,
             "latest_signal": self.strategy_runner.latest_signal if self.strategy_runner else "WAITING",
             "current_price": self.market_data.current_price if self.market_data else 0,
             "atm_strike": self.market_data.atm_strike if self.market_data else 0,
             "logs": self.latest_log,
-            "positions": self.position_manager.get_positions() if self.position_manager else [],
+            "positions": all_positions,
             "risk_stats": self.risk_manager.get_stats() if self.risk_manager else {},
-            "trade_history": self.trade_executor.trade_history[-10:] if self.trade_executor else [],
-            "paper_balance": self.order_manager.paper_manager.get_balance() if self.order_manager else 0,
+            "trade_history": unified_trade_history,
+            "paper_balance": paper_mgr.get_balance() if paper_mgr else 0,
             "paper_pnl": unrealized_pnl,
-            "paper_daily_pnl": self.order_manager.paper_manager.get_daily_realized_pnl() if self.order_manager else 0.0,
+            "paper_daily_pnl": paper_mgr.get_daily_realized_pnl() if paper_mgr else 0.0,
+            "portfolio_stats": paper_mgr.get_portfolio_stats() if paper_mgr else {},
             "market_state": market_state,
             "strategy_data": complete_strategy_data,
             "reasoning": self.strategy_runner.latest_reasoning if self.strategy_runner else {},
@@ -267,6 +373,8 @@ class TradingBot:
             "pcr": market_state.get("pcr"),
             "pcr_analysis": market_state.get("pcr_analysis"),
             "vix": market_state.get("vix"),
+            "intelligence": intelligence_snapshot,   # New: full intelligence context
+            "token_valid": getattr(self.data_fetcher, "token_valid", True) if self.data_fetcher else True,
             "config": {
                 "timeframe": self.timeframe,
                 "symbol": self.nifty_key,

@@ -10,7 +10,6 @@ const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ strategyData, currentPr
     const supertrend = strategyData?.supertrend || "WAITING";
     const ema5 = strategyData?.ema_5 || 0;
     const ema20 = strategyData?.ema_20 || 0;
-    const vwap = strategyData?.vwap || 0;
     const greeks = strategyData?.greeks;
 
     return (
@@ -43,17 +42,6 @@ const IndicatorPanel: React.FC<IndicatorPanelProps> = ({ strategyData, currentPr
                 </div>
                 <div className="text-[10px] text-gray-500">
                     {ema5 > ema20 ? '↑ Bullish' : '↓ Bearish'}
-                </div>
-            </div>
-
-            {/* VWAP */}
-            <div className="bg-white/5 p-3 rounded-lg border border-white/10">
-                <div className="text-[10px] text-gray-400 uppercase tracking-wider mb-1">VWAP</div>
-                <div className="text-lg font-mono font-bold text-blue-400">
-                    {vwap.toFixed(2)}
-                </div>
-                <div className={`text-[10px] ${currentPrice > vwap ? 'text-green-400' : 'text-red-400'}`}>
-                    Price is {currentPrice > vwap ? 'Above' : 'Below'}
                 </div>
             </div>
 

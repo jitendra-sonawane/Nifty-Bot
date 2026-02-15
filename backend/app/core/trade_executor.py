@@ -23,9 +23,17 @@ class TradeExecutor:
         """Executes a trade based on signal data."""
         signal = signal_data['signal']
         greeks = signal_data.get('greeks')
-        
         if not greeks:
             logger.warning("Cannot execute trade without Greeks data")
+            return
+
+        # Require instrument keys for order placement
+        instrument_key = greeks.get('ce_instrument_key') if signal == "BUY_CE" else greeks.get('pe_instrument_key')
+        if not instrument_key:
+            logger.warning(
+                "Cannot execute trade: Greeks missing ce_instrument_key/pe_instrument_key. "
+                "Ensure MarketDataManager includes option instrument keys in greeks."
+            )
             return
 
         try:
@@ -38,11 +46,15 @@ class TradeExecutor:
     def _place_order_sync(self, signal, greeks, signal_data):
         current_balance = self.order_manager.paper_manager.get_balance()
         current_positions = self.position_manager.get_position_count()
-        
-        can_trade, reason = self.risk_manager.can_trade(current_balance, current_positions)
-        
+
+        # RiskManager.can_trade(strategy_name, current_balance, current_positions, max_risk=0)
+        strategy_name = "main"
+        can_trade, reason = self.risk_manager.can_trade(
+            strategy_name, current_balance, current_positions, max_risk=0
+        )
         if can_trade:
             entry_price = greeks['ce']['price'] if signal == "BUY_CE" else greeks['pe']['price']
+            logger.info(f"✅ Risk check passed. Placing {signal} order @ ₹{entry_price:.2f}")
             quantity = self.risk_manager.calculate_position_size(
                 entry_price=entry_price,
                 stop_loss_pct=0.30,
@@ -51,7 +63,7 @@ class TradeExecutor:
             
             option_type = "CE" if signal == "BUY_CE" else "PE"
             instrument_key = greeks.get('ce_instrument_key') if signal == "BUY_CE" else greeks.get('pe_instrument_key')
-            
+
             order_id = self.order_manager.place_order(
                 instrument_key=instrument_key,
                 quantity=quantity,
@@ -60,26 +72,28 @@ class TradeExecutor:
                 product='D',
                 price=entry_price
             )
-            
             if order_id:
+                strike = signal_data.get('strike')
                 position = self.position_manager.open_position(
                     instrument_key=instrument_key,
                     entry_price=entry_price,
                     quantity=quantity,
-                    position_type=option_type
+                    position_type=option_type,
+                    strike=strike
                 )
                 logger.info(f"✅ Position opened: {position.id}")
                 
-                # Log for AI
+                # Log for AI (include intelligence context for richer features)
                 self.ai_collector.log_entry(
                     trade_id=position.id,
                     timestamp=datetime.datetime.now(),
                     market_data=signal_data['market_data'],
                     indicators=signal_data['indicators'],
-                    signal=signal
+                    signal=signal,
+                    intelligence_context=signal_data.get('intelligence_context'),
                 )
         else:
-            logger.warning(f"❌ Trade blocked: {reason}")
+            logger.warning(f"❌ Trade blocked by risk manager: {reason}")
 
     async def check_exits(self, current_prices: Dict[str, float]):
         """Checks for position exits."""
@@ -93,12 +107,12 @@ class TradeExecutor:
                     self.risk_manager.update_daily_pnl(trade['pnl'])
                     
                     self.ai_collector.update_exit(
-                        trade_id=trade.get('id', 'UNKNOWN'),
+                        trade_id=trade.get('position_id', trade.get('id', 'UNKNOWN')),
                         pnl=trade['pnl'],
                         pnl_pct=trade['pnl_pct'],
                         outcome=1 if trade['pnl'] > 0 else 0
                     )
-                    self.ai_collector.save_to_csv("ai_training_data_live.csv")
+                    self.ai_collector.save_to_csv("ai_training_data.csv")
                     
                     logger.info(f"💼 Trade Closed: {trade['reason']} | P&L: ₹{trade['pnl']:.2f}")
             except Exception as e:

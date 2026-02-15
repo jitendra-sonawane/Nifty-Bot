@@ -6,8 +6,6 @@ interface FilterStatusProps {
     rsi?: number;
     volumeRatio?: number;
     atrPct?: number;
-    vwap?: number;
-    currentPrice?: number;
     supertrend?: string;
     ema5?: number;
     ema20?: number;
@@ -18,8 +16,6 @@ const FilterStatusPanel: React.FC<FilterStatusProps> = ({
     rsi = 0,
     volumeRatio = 0,
     atrPct = 0,
-    vwap = 0,
-    currentPrice = 0,
     supertrend = '',
     ema5 = 0,
     ema20 = 0
@@ -31,8 +27,6 @@ const FilterStatusPanel: React.FC<FilterStatusProps> = ({
     const safeRsi = typeof rsi === 'number' ? rsi : 0;
     const safeVolumeRatio = typeof volumeRatio === 'number' ? volumeRatio : 0;
     const safeAtrPct = typeof atrPct === 'number' ? atrPct : 0;
-    const safeVwap = typeof vwap === 'number' ? vwap : 0;
-    const safeCurrentPrice = typeof currentPrice === 'number' ? currentPrice : 0;
     const safeEma5 = typeof ema5 === 'number' ? ema5 : 0;
     const safeEma20 = typeof ema20 === 'number' ? ema20 : 0;
 
@@ -49,10 +43,6 @@ const FilterStatusPanel: React.FC<FilterStatusProps> = ({
             ? 'bg-green-500/10 border-green-500/30 text-green-400'
             : 'bg-red-500/10 border-red-500/30 text-red-400';
     };
-
-    const priceVwapDistance = safeVwap && safeCurrentPrice
-        ? Math.abs((safeCurrentPrice - safeVwap) / safeVwap * 100).toFixed(3)
-        : '0.000';
 
     return (
         <div className="space-y-2">
@@ -128,19 +118,6 @@ const FilterStatusPanel: React.FC<FilterStatusProps> = ({
                 </div>
             </div>
 
-            {/* Price vs VWAP Filter */}
-            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.price_vwap || false)}`}>
-                <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-2">
-                        {getStatusIcon(safeFilters.price_vwap || false)}
-                        <span className="text-xs font-medium text-white">Price vs VWAP</span>
-                    </div>
-                    <span className="text-lg font-bold font-mono">{priceVwapDistance}%</span>
-                </div>
-                <div className="text-[10px] text-gray-400 mt-1">
-                    Target: &gt;0.05% distance
-                </div>
-            </div>
 
             {/* Supertrend Filter */}
             <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.supertrend || false)}`}>
@@ -203,6 +180,155 @@ const FilterStatusPanel: React.FC<FilterStatusProps> = ({
                 </div>
                 <div className="text-[10px] text-gray-400 mt-1">
                     Put-Call Ratio directional bias
+                </div>
+            </div>
+
+            {/* ── Intelligence Filters ─────────────────────────── */}
+            <div className="border-t border-white/10 my-3 pt-3">
+                <h4 className="text-[10px] text-purple-400 uppercase tracking-widest mb-2 font-semibold">Intelligence Filters</h4>
+            </div>
+
+            {/* Market Regime */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.market_regime ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.market_regime ?? true)}
+                        <span className="text-xs font-medium text-white">Market Regime</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.market_regime !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.market_regime !== false ? 'PASS' : 'BLOCKED'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    Ranging / Trending / High-Vol regime gate
+                </div>
+            </div>
+
+            {/* IV Rank */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.iv_rank ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.iv_rank ?? true)}
+                        <span className="text-xs font-medium text-white">IV Rank</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.iv_rank !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.iv_rank !== false ? 'PASS' : 'LOW'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    IV Rank ≥ 20 for premium selling
+                </div>
+            </div>
+
+            {/* Market Breadth */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.market_breadth ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.market_breadth ?? true)}
+                        <span className="text-xs font-medium text-white">Market Breadth</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.market_breadth !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.market_breadth !== false ? 'PASS' : 'DIVERGE'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    Advance/Decline breadth confirmation
+                </div>
+            </div>
+
+            {/* Order Book */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.order_book ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.order_book ?? true)}
+                        <span className="text-xs font-medium text-white">Order Book</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.order_book !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.order_book !== false ? 'LIQUID' : 'POOR'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    Option liquidity &amp; spread check
+                </div>
+            </div>
+
+            {/* VIX */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.vix ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.vix ?? true)}
+                        <span className="text-xs font-medium text-white">VIX</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.vix !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.vix !== false ? 'SAFE' : 'HIGH'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    India VIX &lt; 20 for normal trading
+                </div>
+            </div>
+
+            {/* PCR Trend */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.pcr_trend ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.pcr_trend ?? true)}
+                        <span className="text-xs font-medium text-white">PCR Trend</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.pcr_trend !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.pcr_trend !== false ? 'ALIGNED' : 'DIVERGE'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    PCR direction vs signal confluence
+                </div>
+            </div>
+
+            {/* Time of Day */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.time_of_day ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.time_of_day ?? true)}
+                        <span className="text-xs font-medium text-white">Time of Day</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.time_of_day !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.time_of_day !== false ? 'OPEN' : 'BLOCKED'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    Avoids opening &amp; closing volatility
+                </div>
+            </div>
+
+            {/* OI Buildup */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.oi_buildup ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.oi_buildup ?? true)}
+                        <span className="text-xs font-medium text-white">OI Buildup</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.oi_buildup !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.oi_buildup !== false ? 'PASS' : 'CONTRA'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    Long/Short buildup vs unwinding
+                </div>
+            </div>
+
+            {/* Expiry Day */}
+            <div className={`rounded-lg p-3 border ${getStatusColor(safeFilters.expiry_day ?? true)}`}>
+                <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                        {getStatusIcon(safeFilters.expiry_day ?? true)}
+                        <span className="text-xs font-medium text-white">Expiry Day</span>
+                    </div>
+                    <span className={`text-sm font-bold ${safeFilters.expiry_day !== false ? 'text-green-400' : 'text-red-400'}`}>
+                        {safeFilters.expiry_day !== false ? 'OK' : '0DTE ⚠'}
+                    </span>
+                </div>
+                <div className="text-[10px] text-gray-400 mt-1">
+                    Gamma risk check on expiry day
                 </div>
             </div>
         </div>
