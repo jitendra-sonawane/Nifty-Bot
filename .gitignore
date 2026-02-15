@@ -19,6 +19,8 @@ env/
 # Logs
 *.log
 logs/
+learning/
+node play/
 server.log
 uvicorn.log
 frontend.log
@@ -69,3 +71,4 @@ Thumbs.db
 *.tmp
 *.bak
 .claude/
+
