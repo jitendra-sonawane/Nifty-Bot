@@ -4,18 +4,35 @@ This is an automated trading bot for Nifty 50 options using the Upstox API.
 
 ## Setup
 
+First, navigate to the backend directory:
+```bash
+cd backend
+```
+
 1.  **Install Python**: Ensure Python 3.8+ is installed.
-2.  **Install Dependencies**:
+2.  **Install `uv`**: `uv` is a fast Python package installer.
     ```bash
-    pip install -r requirements.txt
+    pip install uv
     ```
-3.  **Configure Credentials**:
+3.  **Create a virtual environment (optional but recommended)**:
+    ```bash
+    uv venv
+    ```
+    Activate the environment:
+    ```bash
+    source .venv/bin/activate
+    ```
+4.  **Install Dependencies**:
+    ```bash
+    uv sync
+    ```
+5.  **Configure Credentials**:
     *   Rename `.env.example` to `.env`.
     *   Open `.env` and add your Upstox API Key, Secret, and Redirect URI.
 
 ## Running the Bot
 
-Run the main script:
+From the `backend` directory, run the main script:
 ```bash
 python3 main.py
 ```

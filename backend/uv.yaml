@@ -1,0 +1,12 @@
+uv:
+  name: nifty-bot-backend
+  dependencies:
+    - upstox-python-sdk
+    - pandas==2.2.2
+    - python-dotenv
+    - requests
+    - fastapi
+    - "uvicorn[standard]"
+    - scipy
+    - websocket-client
+    - pytest
