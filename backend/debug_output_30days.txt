@@ -1,0 +1,35 @@
+/Users/jitendrasonawane/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+17:20:52 - INFO - ================================================================================
+17:20:52 - INFO - 🚀 NiftyBot Backend Started - Log File: logs/niftybot_2026-02-12_17-20-52.log
+17:20:52 - INFO - 📅 Timestamp: 2026-02-12 17:20:52
+17:20:52 - INFO - ================================================================================
+17:20:52 - INFO - 📊 Fetching v3 historical data: NSE_INDEX|Nifty 50 | 5minute | 2026-02-11 to 2026-02-12
+17:20:52 - INFO - ✅ Found 75 candles
+17:20:52 - INFO - 📊 Fetching v3 historical data: NSE_INDEX|Nifty 50 | 5minute | 2026-02-11 to 2026-02-13
+17:20:52 - INFO - ✅ Found 75 candles
+17:20:52 - INFO - 📊 Fetching Intraday data: NSE_INDEX|Nifty 50 | minutes/5
+17:20:52 - INFO - ✅ Found 75 Intraday candles
+17:20:52 - INFO - 📊 Fetching v3 historical data: NSE_INDEX|Nifty 50 | 5minute | 2026-01-13 to 2026-02-12
+17:20:52 - INFO - ✅ Found 1575 candles
+\n--- TEST 1: Historical Data Inclusivity ---
+Fetching History: Yesterday (2026-02-11) to Today (2026-02-12)
+Result (to_date=2026-02-12): Last Candle = 2026-02-11 15:25:00+05:30
+Fetching History: Yesterday (2026-02-11) to Tomorrow (2026-02-13)
+Result (to_date=2026-02-13): Last Candle = 2026-02-11 15:25:00+05:30
+\n--- TEST 2: Intraday Data Behavior ---
+Intraday Last Candle Time: 2026-02-12 15:25:00+05:30
+Timezone info: UTC+05:30
+Current System Time: 2026-02-12 17:20:52.857876+05:30
+Gap (Current - Last Candle): 6952.86 seconds
+\n--- TEST 3: Merge Check ---
+Historical Last: 2026-02-11 15:25:00+05:30
+Intraday First: 2026-02-12 09:15:00+05:30
+Duplicates found: 0
+\n--- TEST 4: 30 Days Data Volume ---
+Fetching 30 days: 2026-01-13 to 2026-02-12
+Candles Received: 1575
+Expected Approx: 2250
+⚠️ WARNING: SIGNIFICANTLY LESS DATA THAN EXPECTED. API might be truncating.
+First Candle: 2026-01-13 09:15:00+05:30
+Last Candle: 2026-02-11 15:25:00+05:30

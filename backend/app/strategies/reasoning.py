@@ -94,7 +94,6 @@ class TradingReasoning:
         filter_names = {
             'supertrend': '📊 Supertrend',
             'ema_crossover': '📈 EMA Crossover',
-            'price_vwap': '📍 Price vs VWAP',
             'rsi': '🔢 RSI Level',
             'volume': '📊 Volume',
             'volatility': '📈 Volatility (ATR)',
@@ -116,41 +115,38 @@ class TradingReasoning:
         rsi = signal_data.get('rsi', 0)
         ema_5 = signal_data.get('ema_5', 0)
         ema_20 = signal_data.get('ema_20', 0)
-        vwap = signal_data.get('vwap', 0)
         supertrend = signal_data.get('supertrend', '')
-        
+
         # Get support/resistance levels
         nearest_support = support_resistance.get('nearest_support', 0) if support_resistance else 0
         nearest_resistance = support_resistance.get('nearest_resistance', 0) if support_resistance else 0
-        
+
         key_factors = [
             f"📈 EMA Crossover: {ema_5:.0f} > {ema_20:.0f} (Uptrend confirmed)",
             f"🔴 RSI: {rsi:.1f} (Strong momentum - above 50)",
             f"📊 Supertrend: {supertrend} (Price above moving trend)",
-            f"💰 Price at ₹{current_price:.2f} (Above VWAP ₹{vwap:.2f})",
             f"🛡️ Support: ₹{nearest_support:.2f} (Downside protection)",
             f"🎯 Resistance: ₹{nearest_resistance:.2f} (Profit target)"
         ]
-        
+
         # Breakout info
         if breakout_data and breakout_data.get('is_breakout'):
             key_factors.append(f"🔥 {breakout_data.get('breakout_type')} Breakout Detected (Strength: {breakout_data.get('strength', 0):.1f}%)")
-        
+
         risk_factors = [
             f"If price closes below ₹{nearest_support:.2f}, invalidates bullish setup",
             "Watch for sudden volume drop - could indicate reversal",
             "Monitor RSI crossing below 50 - loss of momentum"
         ]
-        
+
         trade_rationale = (
             f"Multiple bullish signals aligned: EMA crossover ({ema_5:.0f}>{ema_20:.0f}), "
-            f"Strong uptrend (Supertrend), strong momentum (RSI {rsi:.1f}), and price above VWAP ({vwap:.2f}). "
+            f"Strong uptrend (Supertrend), strong momentum (RSI {rsi:.1f}). "
             f"This suggests buyers are in control and willing to push prices higher."
         )
-        
+
         why_now = (
             f"EMA just crossed above ({ema_5:.0f}>{ema_20:.0f}) with Supertrend confirmation and RSI {rsi:.1f}. "
-            f"Price is {((current_price - vwap) / vwap * 100):.2f}% above VWAP. "
             f"Entry window is NOW - this is the start of the uptrend."
         )
         
@@ -176,41 +172,38 @@ class TradingReasoning:
         rsi = signal_data.get('rsi', 0)
         ema_5 = signal_data.get('ema_5', 0)
         ema_20 = signal_data.get('ema_20', 0)
-        vwap = signal_data.get('vwap', 0)
         supertrend = signal_data.get('supertrend', '')
-        
+
         # Get support/resistance levels
         nearest_support = support_resistance.get('nearest_support', 0) if support_resistance else 0
         nearest_resistance = support_resistance.get('nearest_resistance', 0) if support_resistance else 0
-        
+
         key_factors = [
             f"📉 EMA Crossover: {ema_5:.0f} < {ema_20:.0f} (Downtrend confirmed)",
             f"🔵 RSI: {rsi:.1f} (Weak momentum - below 50)",
             f"📊 Supertrend: {supertrend} (Price below moving trend)",
-            f"💰 Price at ₹{current_price:.2f} (Below VWAP ₹{vwap:.2f})",
             f"🛡️ Resistance: ₹{nearest_resistance:.2f} (Downside protection ceiling)",
             f"🎯 Support: ₹{nearest_support:.2f} (Profit target)"
         ]
-        
+
         # Breakout info
         if breakout_data and breakout_data.get('is_breakout'):
             key_factors.append(f"🔥 {breakout_data.get('breakout_type')} Breakout Detected (Strength: {breakout_data.get('strength', 0):.1f}%)")
-        
+
         risk_factors = [
             f"If price closes above ₹{nearest_resistance:.2f}, invalidates bearish setup",
             "Watch for sudden volume spike upwards - could indicate reversal",
             "Monitor RSI crossing above 50 - loss of bearish momentum"
         ]
-        
+
         trade_rationale = (
             f"Multiple bearish signals aligned: EMA crossover ({ema_5:.0f}<{ema_20:.0f}), "
-            f"Strong downtrend (Supertrend), weak momentum (RSI {rsi:.1f}), and price below VWAP ({vwap:.2f}). "
+            f"Strong downtrend (Supertrend), weak momentum (RSI {rsi:.1f}). "
             f"This suggests sellers are in control and willing to push prices lower."
         )
-        
+
         why_now = (
             f"EMA just crossed below ({ema_5:.0f}<{ema_20:.0f}) with Supertrend confirmation and RSI {rsi:.1f}. "
-            f"Price is {((vwap - current_price) / vwap * 100):.2f}% below VWAP. "
             f"Entry window is NOW - this is the start of the downtrend."
         )
         
@@ -234,17 +227,13 @@ class TradingReasoning:
         """Generate reasoning for HOLD signal"""
         
         rsi = signal_data.get('rsi', 0)
-        vwap = signal_data.get('vwap', 0)
-        
+
         # Find failing filters
         failing_reasons = []
         if not filters.get('supertrend'):
             failing_reasons.append("Supertrend not aligned with price momentum")
         if not filters.get('rsi'):
             failing_reasons.append("RSI not in extreme zone (weak momentum)")
-        if not filters.get('price_vwap'):
-            # Note: This filter is always passing for index instruments
-            failing_reasons.append("Price vs VWAP (Info: VWAP informational only for indices)")
         if not filters.get('volume'):
             failing_reasons.append("Volume too low (weak confirmation)")
         if not filters.get('volatility'):
@@ -259,7 +248,6 @@ class TradingReasoning:
         key_factors = [
             f"📊 Supertrend: {signal_data.get('supertrend', 'UNKNOWN')} (Mixed signals)",
             f"🔢 RSI: {rsi:.1f} (In neutral zone 35-65)",
-            f"📍 Price vs VWAP: Close proximity (₹{vwap:.2f})",
         ]
         
         trade_rationale = (

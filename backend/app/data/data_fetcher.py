@@ -44,15 +44,45 @@ class DataFetcher:
         self.api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration))
         self.instruments_df = None
         self.greeks_calculator = GreeksCalculator()
+        self.token_valid = True  # Flips to False on 401 / UDAPI100050
         
 
 
     def set_access_token(self, token):
         self.access_token = token
+        self.token_valid = True  # Reset on new token
         configuration = upstox_client.Configuration()
         configuration.access_token = token
         self.api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration))
         print("DataFetcher: Access Token updated.")
+
+    def _is_token_error(self, response) -> bool:
+        """
+        Check if an API response indicates a token error (expired / invalid).
+        Logs a clear, actionable message and sets self.token_valid = False.
+        Returns True if a token error was detected.
+        """
+        if response.status_code == 401:
+            self.token_valid = False
+            self.logger.error(
+                "🔑 TOKEN EXPIRED (401) — re-authenticate via the dashboard Login button"
+            )
+            return True
+        # Upstox sometimes returns 200 with an error body
+        if response.status_code == 200:
+            try:
+                body = response.json()
+                if isinstance(body, dict) and body.get("status") == "error":
+                    codes = [e.get("errorCode", "") for e in body.get("errors", [])]
+                    if "UDAPI100050" in codes or any("token" in c.lower() for c in codes):
+                        self.token_valid = False
+                        self.logger.error(
+                            "🔑 TOKEN INVALID (UDAPI100050) — re-authenticate via the dashboard Login button"
+                        )
+                        return True
+            except Exception:
+                pass
+        return False
 
     def load_instruments(self):
         """Downloads and loads the instrument master list."""
@@ -243,7 +273,10 @@ class DataFetcher:
             }
             
             response = requests.get(url, headers=headers, timeout=30)
-            
+
+            if self._is_token_error(response):
+                return None
+
             if response.status_code == 200:
                 data = response.json()
                 if 'data' in data and 'candles' in data['data']:
@@ -268,6 +301,74 @@ class DataFetcher:
             return None
         except Exception as e:
             self.logger.error(f"❌ Exception: {type(e).__name__}: {e}")
+            return None
+
+    def get_intraday_data(self, instrument_key, interval):
+        """
+        Fetches intraday candle data for the current day using Upstox v3 API.
+        This closes the gap between historical data (which ends yesterday) and live stream.
+        """
+        try:
+            # Parse interval to V3 format: 'minutes/1', 'minutes/5', 'minutes/15', 'minutes/30'
+            interval_map = {
+                '1minute': 'minutes/1',
+                '5minute': 'minutes/5',
+                '10minute': 'minutes/10', # Note: Verify 10min support, otherwise fallback or resample
+                '15minute': 'minutes/15',
+                '30minute': 'minutes/30',
+                '60minute': 'minutes/60',
+            }
+            
+            v3_interval = interval_map.get(interval)
+            
+            if not v3_interval:
+                # Fallback logic or default
+                if interval == '10minute':
+                    # Upstox V3 might not support 10min directly in intraday, use 5min and resample later?
+                    # For now let's try strict mapping or error.
+                    # Actually, V3 intraday supports specific intervals. Let's assume standard ones.
+                    v3_interval = 'minutes/10' # Try blindly
+                else:
+                    self.logger.warning(f"⚠️ Interval {interval} might not be supported for Intraday API. Defaulting to 1minute.")
+                    v3_interval = 'minutes/1'
+
+            encoded_key = urllib.parse.quote(instrument_key)
+            url = f"{self.base_url_v3}/historical-candle/intraday/{encoded_key}/{v3_interval}"
+            
+            headers = {
+                'Accept': 'application/json',
+                'Authorization': f'Bearer {self.access_token}'
+            }
+            
+            self.logger.info(f"📊 Fetching Intraday data: {instrument_key} | {v3_interval}")
+            response = requests.get(url, headers=headers, timeout=10)
+
+            if self._is_token_error(response):
+                return None
+
+            if response.status_code == 200:
+                data = response.json()
+                if 'data' in data and 'candles' in data['data']:
+                    candles = data['data']['candles']
+                    if candles:
+                        self.logger.info(f"✅ Found {len(candles)} Intraday candles")
+                        df = pd.DataFrame(candles, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        df = df.set_index('timestamp')
+                        df = df.sort_index()
+                        return df
+                    else:
+                        self.logger.info(f"ℹ️ Intraday data empty (Market might be closed or just opened)")
+                        return None
+                else:
+                    self.logger.error(f"⚠️ Unexpected Intraday response format")
+                    return None
+            else:
+                self.logger.warning(f"⚠️ Intraday fetch failed: {response.status_code} - {response.text[:200]}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"❌ Exception fetching Intraday data: {e}")
             return None
 
     def get_option_chain(self, instrument_key, expiry_date):
@@ -354,6 +455,8 @@ class DataFetcher:
         }
         params = {'instrument_key': instrument_key}
         response = requests.get(url, headers=headers, params=params)
+        if self._is_token_error(response):
+            return None
         if response.status_code == 200:
             data = response.json()
             # Parse LTP
@@ -431,6 +534,8 @@ class DataFetcher:
         try:
             self.logger.info(f"🔍 Fetching quotes for {len(instrument_keys)} keys: {symbol_info_str}")
             response = requests.get(url, headers=headers, params=params, timeout=10)
+            if self._is_token_error(response):
+                return {}
             if response.status_code == 200:
                 data = response.json()
                 if 'data' in data:

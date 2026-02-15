@@ -2,20 +2,29 @@ import asyncio
 import logging
 import datetime
 import pandas as pd
-from typing import List, Callable, Dict, Optional
+from typing import List, Callable, Dict, Optional, TYPE_CHECKING
 from app.strategies.strategy import StrategyEngine
 from app.strategies.reasoning import TradingReasoning
 from app.data.data_fetcher import DataFetcher
 from app.core.config import Config
 from app.core.streaming import StreamingEMA, CandleManager
 
+if TYPE_CHECKING:
+    from app.intelligence import IntelligenceEngine
+
 logger = logging.getLogger(__name__)
 
 class StrategyRunner:
-    def __init__(self, strategy_engine: StrategyEngine, data_fetcher: DataFetcher):
+    def __init__(
+        self,
+        strategy_engine: StrategyEngine,
+        data_fetcher: DataFetcher,
+        intelligence_engine: Optional["IntelligenceEngine"] = None,
+    ):
         self.strategy_engine = strategy_engine
         self.data_fetcher = data_fetcher
         self.reasoning_engine = TradingReasoning()
+        self.intelligence_engine = intelligence_engine   # Optional: plug in at construction
         
         self.latest_signal = "WAITING"
         self.latest_strategy_data = {}
@@ -39,10 +48,16 @@ class StrategyRunner:
         self.ema_20 = StreamingEMA(20)
         self.is_initialized = False
         
+        # Previous Day High/Low/Close
+        self.pdh: Optional[float] = None
+        self.pdl: Optional[float] = None
+        self.pdc: Optional[float] = None
+
         # Callbacks
         self.on_signal: List[Callable] = []
         
         self.is_running = False
+        self.lock = asyncio.Lock() # Fix race condition
 
     async def on_price_update(self, current_price: float, market_state: Dict):
         """Called whenever price updates."""
@@ -50,14 +65,16 @@ class StrategyRunner:
             return None
             
         try:
-            # Run in executor to avoid blocking
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(None, self._run_strategy, current_price, market_state)
+            # Synchronize execution to prevent race conditions on shared DataFrame
+            async with self.lock:
+                # Run in executor to avoid blocking
+                loop = asyncio.get_running_loop()
+                return await loop.run_in_executor(None, self._run_strategy, current_price, market_state)
         except Exception as e:
             logger.error(f"Error running strategy: {e}")
             return None
 
-    def _run_strategy(self, current_price: float, market_state: Dict):
+    def _run_strategy(self, current_price: float, market_state: Dict, dry_run: bool = False):
         if not self.is_initialized:
             self._initialize_data()
             if not self.is_initialized:
@@ -86,17 +103,49 @@ class StrategyRunner:
         df.at[idx, 'ema_20'] = cur_ema_20
         
         # 4. Clean up other indicators to force recalculation
-        cols_to_drop = ['rsi', 'supertrend', 'vwap', 'atr']
-        for col in cols_to_drop:
-            if col in df.columns:
-                df.drop(columns=[col], inplace=True)
-        
+        stale_cols = [c for c in ['rsi', 'supertrend', 'atr'] if c in df.columns]
+        if stale_cols:
+            df.drop(columns=stale_cols, inplace=True)
+
         # 5. Run Strategy
         if df is not None and not df.empty:
             pcr = market_state.get('pcr')
             greeks = market_state.get('greeks')
-            
-            result = self.strategy_engine.check_signal(df, pcr=pcr, greeks=greeks)
+
+            # Ensure Greeks are present for live execution
+            if not dry_run and not greeks:
+                logger.warning(f"⚠️ Greeks data missing in market_state. Skipping strategy run.")
+                return None
+
+            # Feed DataFrame to intelligence engine (MarketRegime needs it)
+            intelligence_context = None
+            if self.intelligence_engine and not dry_run:
+                self.intelligence_engine.update({
+                    "df":     df,
+                    "greeks": greeks,
+                    "iv":     (greeks.get("ce", {}).get("iv") if greeks else None),
+                    "expiry": (greeks.get("expiry_date") if greeks else None),
+                })
+                intelligence_context = self.intelligence_engine.get_context()
+
+            vix = market_state.get('vix')
+            pcr_trend = market_state.get('pcr_trend')
+
+            # Build PDH/PDL/PDC dict
+            pdh_pdl_pdc = None
+            if self.pdh is not None:
+                pdh_pdl_pdc = {"pdh": self.pdh, "pdl": self.pdl, "pdc": self.pdc}
+
+            result = self.strategy_engine.check_signal(
+                df,
+                pcr=pcr,
+                greeks=greeks,
+                intelligence_context=intelligence_context,
+                vix=vix,
+                pcr_trend=pcr_trend,
+                current_time=datetime.datetime.now(),
+                pdh_pdl_pdc=pdh_pdl_pdc,
+            )
             
             # DEBUG: Log what check_signal returned
             logger.info(f"🐛 DEBUG: check_signal result type: {type(result)}")
@@ -146,46 +195,67 @@ class StrategyRunner:
                         self.target_contract = f"NIFTY {expiry} {strike} CE"
                     elif signal == "BUY_PE":
                         self.target_contract = f"NIFTY {expiry} {strike} PE"
+                    logger.info(f"🎯 Target Contract determined: {self.target_contract} for signal {signal}")
+                else:
+                    if not dry_run:
+                        logger.warning(f"⚠️ Greeks missing or incomplete during signal generation, cannot determine target contract: {greeks}")
                 
                 # Check Cooldown and Emit
                 if signal in ["BUY_CE", "BUY_PE"]:
                     current_time = datetime.datetime.now().timestamp()
                     last_time = self.last_signal_time.get(signal, 0)
+                    diff = current_time - last_time
+                    cooldown_ok = diff >= self.signal_cooldown_seconds
+                    if not dry_run:
+                        logger.info(f"🧐 Cooldown Check: Signal={signal}, Diff={diff:.2f}s, Cooldown={self.signal_cooldown_seconds}s")
                     
-                    if current_time - last_time >= self.signal_cooldown_seconds:
+                    # If dry_run, we just return the result for validation, don't update cooldown
+                    if dry_run:
+                        return result
+
+                    if cooldown_ok:
                         self.last_signal_time[signal] = current_time
-                        logger.info(f"🚀 SIGNAL GENERATED: {signal} @ {current_price}")
+                        logger.info(f"🚀 SIGNAL GENERATED: {signal} @ {current_price} | Contract: {self.target_contract}")
                         
+                        # Extract specific indicators for signal_data
+                        rsi = result.get('rsi')
+                        supertrend = result.get('supertrend')
+
                         signal_data = {
                             "signal": signal,
                             "price": current_price,
+                            "timestamp": datetime.datetime.now().isoformat(),
                             "reasoning": self.latest_reasoning,
                             "target_contract": self.target_contract,
+                            "expiry": greeks.get('expiry_date') if greeks else None,
+                            "strike": greeks.get('atm_strike') if greeks else None,
                             "greeks": greeks,
-                            "market_data": {
-                                "open": df['open'].iloc[-1],
-                                "high": df['high'].iloc[-1],
-                                "low": df['low'].iloc[-1],
-                                "close": df['close'].iloc[-1],
-                                "volume": df['volume'].iloc[-1]
-                            },
-                            "indicators": result
+                            "market_data": market_state,
+                            "indicators": {
+                                "rsi": rsi,
+                                "supertrend": supertrend,
+                                "ema_5": cur_ema_5,
+                                "ema_20": cur_ema_20,
+                            }
                         }
                         return signal_data
+                    else:
+                        logger.info(f"⏳ Signal '{signal}' suppressed by cooldown. {self.signal_cooldown_seconds - diff:.2f}s remaining.")
             else:
-                self.latest_signal = str(result)
+                self.latest_signal = result.get('signal', 'HOLD')
                 if result == "WAITING_DATA":
                     logger.debug(f"Strategy waiting for data (have {len(df)} candles)")
                 else:
-                    self.latest_strategy_data = {}
+                    # Persist the full result dictionary so frontend can see progress/indicators
+                    self.latest_strategy_data = result
 
         return None
 
     def _initialize_data(self):
         """Fetch initial historical data and setup managers."""
         try:
-            from_date = (datetime.datetime.now() - datetime.timedelta(days=5)).strftime('%Y-%m-%d')
-            to_date = datetime.datetime.now().strftime('%Y-%m-%d')
+            from_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
+            to_date = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
             
             interval_map = {
                 '1minute': '1minute',
@@ -202,11 +272,48 @@ class StrategyRunner:
             
             logger.info(f"📊 Initializing StrategyRunner: timeframe={self.timeframe}, interval={interval}")
             
-            df = self.data_fetcher.get_historical_data('NSE_INDEX|Nifty 50', interval, from_date, to_date)
+            df_historical = self.data_fetcher.get_historical_data('NSE_INDEX|Nifty 50', interval, from_date, to_date)
+            
+            # Fetch Intraday (Today's) Data to fill the gap
+            df_intraday = self.data_fetcher.get_intraday_data('NSE_INDEX|Nifty 50', interval)
+            
+            # Merge
+            if df_historical is not None and not df_historical.empty:
+                if df_intraday is not None and not df_intraday.empty:
+                    logger.info(f"🔄 Merging Historical ({len(df_historical)}) + Intraday ({len(df_intraday)})")
+                    # Combine, remove duplicates based on index (timestamp)
+                    df = pd.concat([df_historical, df_intraday])
+                    df = df[~df.index.duplicated(keep='last')] # Keep latest if duplicate
+                    df = df.sort_index()
+                else:
+                    df = df_historical
+            elif df_intraday is not None and not df_intraday.empty:
+                df = df_intraday
+                logger.warning("⚠️ Only Intraday data available")
+            else:
+                df = None
             
             if df is not None and not df.empty:
+                # Extract Previous Day High/Low/Close (PDH/PDL/PDC)
+                try:
+                    today = datetime.datetime.now().date()
+                    df_dates = df.index.date if hasattr(df.index, 'date') else pd.to_datetime(df.index).date
+                    unique_dates = sorted(set(df_dates))
+                    past_dates = [d for d in unique_dates if d < today]
+                    if past_dates:
+                        prev_day = past_dates[-1]
+                        prev_day_mask = df_dates == prev_day
+                        prev_day_df = df[prev_day_mask]
+                        if not prev_day_df.empty:
+                            self.pdh = float(prev_day_df['high'].max())
+                            self.pdl = float(prev_day_df['low'].min())
+                            self.pdc = float(prev_day_df['close'].iloc[-1])
+                            logger.info(f"📊 PDH/PDL/PDC: High={self.pdh:.2f} Low={self.pdl:.2f} Close={self.pdc:.2f} (from {prev_day})")
+                except Exception as e:
+                    logger.warning(f"Could not extract PDH/PDL/PDC: {e}")
+
                 self.candle_manager.initialize(df)
-                
+
                 # Check if last candle is incomplete (matches current time window)
                 last_candle_incomplete = False
                 try:
@@ -264,75 +371,28 @@ class StrategyRunner:
             logger.error(f"Error initializing StrategyRunner: {e}", exc_info=True)
 
     def start(self):
-        # Write to a test file to verify this method is called
-        with open('/tmp/strategy_runner_start_called.txt', 'w') as f:
-            f.write(f"StrategyRunner.start() called at {datetime.datetime.now()}\\n")
-        
-        print("="*80)
-        print("🚀 StrategyRunner.start() called!")
-        print("="*80)
-        logger.info("="*80)
-        logger.info("🚀 StrategyRunner.start() called!")
-        logger.info("="*80)
-        self.is_running = True
         logger.info("🚀 StrategyRunner started. Performing initial analysis...")
-        
+        self.is_running = True
+
         # Force initial run to populate state even if market is closed
         try:
-            with open('/tmp/strategy_runner_debug.txt', 'a') as f:
-                f.write(f"[{datetime.datetime.now()}] Entering try block\\n")
-                f.write(f"  is_initialized: {self.is_initialized}\\n")
-            
             if not self.is_initialized:
-                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
-                    f.write(f"  Calling _initialize_data()\\n")
                 self._initialize_data()
-                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
-                    f.write(f"  After _initialize_data(), is_initialized: {self.is_initialized}\\n")
-            
+
             if self.is_initialized and not self.candle_manager.df.empty:
-                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
-                    f.write(f"  DataFrame not empty, shape: {self.candle_manager.df.shape}\\n")
-                
                 last_close = self.candle_manager.df['close'].iloc[-1]
                 logger.info(f"📊 Running initial strategy check on last close: {last_close}")
-                
-                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
-                    f.write(f"  last_close: {last_close}\\n")
-                    f.write(f"  Calling _run_strategy()\\n")
-                
-                # DEBUG: Log DataFrame details
-                df = self.candle_manager.df
-                logger.info(f"🐛 DEBUG: DataFrame Shape: {df.shape}")
-                if not df.empty:
-                    logger.info(f"🐛 DEBUG: Date Range: {df.index[0]} to {df.index[-1]}")
-                    logger.info(f"🐛 DEBUG: Columns: {df.columns.tolist()}")
-                    if 'ema_5' in df.columns:
-                        logger.info(f"🐛 DEBUG: Last EMA 5: {df['ema_5'].iloc[-1]}")
-                    if 'ema_20' in df.columns:
-                        logger.info(f"🐛 DEBUG: Last EMA 20: {df['ema_20'].iloc[-1]}")
-                
-                # Run strategy with empty market_state to populate initial data
-                # This ensures filters and indicators are calculated even when market is closed
-                result = self._run_strategy(last_close, {})
-                
-                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
-                    f.write(f"  After _run_strategy(), result: {result is not None}\\n")
-                    f.write(f"  latest_strategy_data keys: {list(self.latest_strategy_data.keys()) if self.latest_strategy_data else 'None'}\\n")
-                
-                # Log the result to verify data is populated
+
+                # dry_run=True prevents triggering signals or cooldowns during cold start
+                result = self._run_strategy(last_close, {}, dry_run=True)
+
                 if result:
                     logger.info(f"✅ Initial strategy run completed with signal: {result.get('signal')}")
                 elif self.latest_strategy_data:
                     logger.info(f"✅ Initial strategy data populated: Signal={self.latest_strategy_data.get('signal')}, RSI={self.latest_strategy_data.get('rsi')}, Filters={len(self.latest_strategy_data.get('filters', {}))}")
                 else:
                     logger.warning("⚠️ Initial strategy run did not populate data")
-            else:
-                with open('/tmp/strategy_runner_debug.txt', 'a') as f:
-                    f.write(f"  Skipped: is_initialized={self.is_initialized}, df.empty={self.candle_manager.df.empty if self.is_initialized else 'N/A'}\\n")
         except Exception as e:
-            with open('/tmp/strategy_runner_debug.txt', 'a') as f:
-                f.write(f"  EXCEPTION: {str(e)}\\n")
             logger.error(f"Error in initial strategy run: {e}", exc_info=True)
 
     def stop(self):

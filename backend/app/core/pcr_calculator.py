@@ -11,6 +11,7 @@ Interpretation:
 - PCR < 0.5: Extreme bullish sentiment (potential reversal - market overbought)
 """
 
+from collections import deque
 from typing import Dict, Optional, List
 from datetime import datetime
 import logging
@@ -22,15 +23,14 @@ class PCRCalculator:
     """Calculate Put-Call Ratio from option open interest data."""
     
     # PCR thresholds for sentiment classification
-    EXTREME_BEARISH_THRESHOLD = 1.5
-    BEARISH_THRESHOLD = 1.0
+    EXTREME_BULLISH_THRESHOLD = 1.5
     BULLISH_THRESHOLD = 1.0
-    EXTREME_BULLISH_THRESHOLD = 0.5
+    BEARISH_THRESHOLD = 1.0
+    EXTREME_BEARISH_THRESHOLD = 0.5
     
     def __init__(self):
         """Initialize PCR calculator."""
-        self.pcr_history: List[Dict] = []
-        self.max_history = 100  # Keep last 100 PCR readings
+        self.pcr_history: deque = deque(maxlen=100)  # Keep last 100 PCR readings
     
     def calculate_pcr(self, put_oi: float, call_oi: float) -> Optional[float]:
         """
@@ -73,6 +73,9 @@ class PCRCalculator:
         """
         Get sentiment classification from PCR value.
         
+        High PCR (>1) = More Puts = More Support = Bullish
+        Low PCR (<1) = More Calls = More Resistance = Bearish
+        
         Args:
             pcr: Put-Call Ratio
         
@@ -82,16 +85,22 @@ class PCRCalculator:
         if pcr is None:
             return "UNKNOWN"
         
-        if pcr >= self.EXTREME_BEARISH_THRESHOLD:
-            return "EXTREME_BEARISH"
-        elif pcr >= self.BEARISH_THRESHOLD:
-            return "BEARISH"
-        elif pcr > self.BULLISH_THRESHOLD:
-            return "NEUTRAL"
-        elif pcr > self.EXTREME_BULLISH_THRESHOLD:
-            return "BULLISH"
-        else:
+        if pcr >= self.EXTREME_BULLISH_THRESHOLD:
             return "EXTREME_BULLISH"
+        elif pcr >= self.BULLISH_THRESHOLD:
+            return "BULLISH"
+        elif pcr > self.EXTREME_BEARISH_THRESHOLD:
+            # Between 0.5 and 1.0 -> Bearish
+            # Wait, if 1.0 is Bullish Threshold...
+            # Let's refine:
+            # > 1.5: Extreme Bullish
+            # 1.0 - 1.5: Bullish
+            # ~ 1.0: Neutral? 
+            # < 1.0: Bearish
+            # < 0.5: Extreme Bearish
+            return "BEARISH"
+        else:
+            return "EXTREME_BEARISH"
     
     def get_sentiment_emoji(self, sentiment: str) -> str:
         """Get emoji representation of sentiment."""
@@ -113,11 +122,11 @@ class PCRCalculator:
             pcr: Put-Call Ratio
         
         Returns:
-            True if PCR < 1.0 (bullish), False otherwise
+            True if PCR > 1.0 (bullish), False otherwise
         """
         if pcr is None:
             return False
-        return pcr < 1.0
+        return pcr > 1.0
     
     def is_bearish_signal(self, pcr: Optional[float]) -> bool:
         """
@@ -127,11 +136,11 @@ class PCRCalculator:
             pcr: Put-Call Ratio
         
         Returns:
-            True if PCR > 1.0 (bearish), False otherwise
+            True if PCR < 1.0 (bearish), False otherwise
         """
         if pcr is None:
             return False
-        return pcr > 1.0
+        return pcr < 1.0
     
     def is_extreme_signal(self, pcr: Optional[float]) -> bool:
         """
@@ -145,7 +154,7 @@ class PCRCalculator:
         """
         if pcr is None:
             return False
-        return pcr >= self.EXTREME_BEARISH_THRESHOLD or pcr <= self.EXTREME_BULLISH_THRESHOLD
+        return pcr >= self.EXTREME_BULLISH_THRESHOLD or pcr <= self.EXTREME_BEARISH_THRESHOLD
     
     def record_pcr(self, pcr: Optional[float], put_oi: float, call_oi: float) -> None:
         """
@@ -168,10 +177,6 @@ class PCRCalculator:
         }
         
         self.pcr_history.append(record)
-        
-        # Keep only last N readings
-        if len(self.pcr_history) > self.max_history:
-            self.pcr_history = self.pcr_history[-self.max_history:]
     
     def get_pcr_trend(self, periods: int = 5) -> Optional[str]:
         """
@@ -186,7 +191,7 @@ class PCRCalculator:
         if len(self.pcr_history) < periods:
             return None
         
-        recent = self.pcr_history[-periods:]
+        recent = list(self.pcr_history)[-periods:]
         pcr_values = [r['pcr'] for r in recent]
         
         # Check if PCR is increasing (bearish) or decreasing (bullish)
@@ -272,7 +277,7 @@ class PCRCalculator:
         Returns:
             List of PCR records
         """
-        return self.pcr_history[-limit:] if self.pcr_history else []
+        return list(self.pcr_history)[-limit:] if self.pcr_history else []
     
     def clear_history(self) -> None:
         """Clear PCR history."""

@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Options Volume</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #121212;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+        }
+
+        h1 {
+            text-align: center;
+            color: #03dac6;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            background-color: #1e1e1e;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        th,
+        td {
+            padding: 12px 15px;
+            text-align: left;
+            border-bottom: 1px solid #333;
+        }
+
+        th {
+            background-color: #2c2c2c;
+            color: #bb86fc;
+            font-weight: 600;
+            text-transform: uppercase;
+            font-size: 0.9em;
+        }
+
+        tr:hover {
+            background-color: #252525;
+        }
+
+        .positive {
+            color: #03dac6;
+            font-weight: bold;
+        }
+
+        .negative {
+            color: #cf6679;
+            font-weight: bold;
+        }
+
+        .ce {
+            color: #a8d5ff;
+        }
+
+        .pe {
+            color: #ffab91;
+        }
+
+        #status {
+            text-align: center;
+            padding: 10px;
+            color: #888;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🚀 Real-Time Volume Tracker</h1>
+        <div id="status">Connecting...</div>
+
+        <table id="volumeTable">
+            <thead>
+                <tr>
+                    <th>Strike</th>
+                    <th>Type</th>
+                    <th>Volume</th>
+                    <th>Change</th>
+                    <th>Spike</th>
+                    <th>Token</th>
+                    <th>Open Interest</th>
+                </tr>
+            </thead>
+            <tbody id="tableBody">
+                <!-- Rows will be added here -->
+            </tbody>
+        </table>
+    </div>
+
+    <script>
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws/volume`;
+        const socket = new WebSocket(wsUrl);
+        const statusDiv = document.getElementById('status');
+        const tableBody = document.getElementById('tableBody');
+
+        // Keep track of rows to update in place
+        const rows = {};
+
+        socket.onopen = () => {
+            statusDiv.textContent = '🟢 Connected to Live Feed';
+            statusDiv.style.color = '#03dac6';
+        };
+
+        socket.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+
+            if (data.signal_type === 'VOLUME_SPIKE') {
+                handleSpike(data);
+            } else {
+                updateTable(data);
+            }
+        };
+
+        socket.onclose = () => {
+            statusDiv.textContent = '🔴 Disconnected';
+            statusDiv.style.color = '#cf6679';
+        };
+
+        function handleSpike(data) {
+            const rowId = data.token;
+            if (rows[rowId]) {
+                const row = rows[rowId];
+                // Highlight row
+                row.style.backgroundColor = '#cf6679'; // Red flash
+                row.style.color = '#000';
+
+                // Add spike indicator
+                const spikeCell = row.cells[4]; // 5th column
+                spikeCell.innerHTML = `🔥 ${data.spike_ratio.toFixed(1)}x`;
+                spikeCell.style.color = '#ffeb3b';
+                spikeCell.style.fontWeight = 'bold';
+
+                setTimeout(() => {
+                    row.style.backgroundColor = '';
+                    row.style.color = '';
+                }, 1000);
+            }
+        }
+
+        function updateTable(data) {
+            const rowId = data.token;
+
+            // Format Change
+            let changeClass = '';
+            let changeSign = '';
+            if (data.change > 0) {
+                changeClass = 'positive';
+                changeSign = '+';
+            } else if (data.change < 0) {
+                changeClass = 'negative';
+            }
+
+            const typeClass = data.type === 'CE' ? 'ce' : (data.type === 'PE' ? 'pe' : '');
+
+            // HTML for the row content (Last cell reserved for Spike)
+            // Note: We use innerHTML logic to preserve spike cell if not rebuilding entirely, but here we rebuild.
+            // To persist spike indicator, we should check existing content? 
+            // For simplicity, let's just render blank spike cell on normal update, unless we want it to persist.
+            // Let's clear it on update to show "fresh" state, or keep it? 
+            // Let's keep it if it was recently added. 
+
+            let spikeContent = '-';
+            if (rows[rowId]) {
+                spikeContent = rows[rowId].cells[4].innerHTML;
+                if (spikeContent === '-') spikeContent = '';
+            }
+
+            const html = `
+                <td>${data.strike}</td>
+                <td class="${typeClass}">${data.type}</td>
+                <td>${data.volume.toLocaleString()}</td>
+                <td class="${changeClass}">${changeSign}${data.change.toLocaleString()}</td>
+                <td>${spikeContent}</td>
+                <td style="font-size:0.8em; color:#666;">${data.token}</td>
+                <td>${data.open_interest}</td>
+            `;
+
+            if (rows[rowId]) {
+                // Update existing row
+                const row = rows[rowId];
+                row.innerHTML = html;
+
+                // Flash effect for update
+                if (row.style.backgroundColor !== '#cf6679' && row.style.backgroundColor !== 'rgb(207, 102, 121)') {
+                    row.style.backgroundColor = '#383838';
+                    setTimeout(() => {
+                        if (row.style.backgroundColor === 'rgb(56, 56, 56)' || row.style.backgroundColor === '#383838') {
+                            row.style.backgroundColor = '';
+                        }
+                    }, 200);
+                }
+            } else {
+                // Create new row
+                const row = document.createElement('tr');
+                row.innerHTML = html;
+
+                // Insert at top
+                tableBody.prepend(row);
+                rows[rowId] = row;
+            }
+        }
+    </script>
+</body>
+
+</html>

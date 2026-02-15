@@ -16,9 +16,9 @@ const PositionCards: React.FC<PositionCardsProps> = ({ status, closePosition }) 
                     <h2 className="text-sm font-medium mb-2 text-white">📈 Open Positions</h2>
                     <div className="space-y-1">
                         {status.positions.map((position) => {
-                            const currentPrice = status.current_price;
-                            const pnl = (currentPrice - position.entry_price) * position.quantity;
-                            const pnlPct = ((currentPrice - position.entry_price) / position.entry_price) * 100;
+                            const currentPrice = position.current_price ?? position.entry_price;
+                            const pnl = (position.unrealized_pnl != null ? position.unrealized_pnl : (currentPrice - position.entry_price) * position.quantity);
+                            const pnlPct = (position.unrealized_pnl_pct != null ? position.unrealized_pnl_pct : ((currentPrice - position.entry_price) / position.entry_price) * 100);
 
                             return (
                                 <div key={position.id} className="p-2 bg-white/5 rounded border border-white/10">
@@ -28,7 +28,7 @@ const PositionCards: React.FC<PositionCardsProps> = ({ status, closePosition }) 
                                             <div className="text-[10px] text-gray-400">Qty: {position.quantity}</div>
                                         </div>
                                         <button
-                                            onClick={() => closePosition({ position_id: position.id, exit_price: currentPrice })}
+                                            onClick={() => closePosition({ position_id: position.id, exit_price: currentPrice as number })}
                                             className="p-1 hover:bg-red-500/20 rounded transition-colors"
                                             title="Close Position"
                                         >

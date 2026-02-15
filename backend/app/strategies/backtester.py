@@ -1,355 +1,600 @@
-import pandas as pd
+"""
+Enhanced Backtesting Engine for Nifty 50 Option Strategies.
+
+Supports multi-strategy backtesting with:
+- Black-Scholes option premium simulation
+- Virtual wallet with configurable capital
+- Trade-by-trade analytics with reasoning
+- Equity curve generation
+- Performance metrics (Sharpe, Sortino, max drawdown, etc.)
+
+Usage:
+    backtester = StrategyBacktester(data_fetcher)
+    result = backtester.run(
+        strategy=IronCondorStrategy(),
+        from_date="2025-01-01",
+        to_date="2025-01-31",
+        initial_capital=1000000,
+    )
+    print(result.metrics.to_dict())
+"""
+
 import datetime
-from typing import Dict, List
-import numpy as np
 import logging
+import uuid
+import math
+from typing import List, Dict, Optional
+
+import pandas as pd
+import numpy as np
+
+from app.core.config import Config
+from app.core.models import (
+    BacktestResult,
+    PerformanceMetrics,
+    TradeRecord,
+    StrategySignal,
+    MultiLegPosition,
+    PositionLeg,
+    SignalAction,
+    TransactionType,
+)
+from app.core.option_chain import OptionChainManager
+from app.core.options_pricer import (
+    black_scholes_price,
+    calculate_atm_strike,
+    estimate_premium_change,
+)
 from app.data.data_fetcher import DataFetcher
 from app.strategies.strategy import StrategyEngine
-from app.managers.position_manager import Position
-from app.managers.risk_manager import RiskManager
-from app.utils.ai_data_collector import AIDataCollector
+from app.strategies.base_strategy import BaseStrategy
 
-# Get logger instance
-try:
-    from app.core.logger_config import logger
-except ImportError:
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
-class Backtester:
-    """Backtest trading strategy on historical data."""
+
+class StrategyBacktester:
+    """
+    Multi-strategy backtester with option premium simulation.
     
-    def __init__(self, data_fetcher: DataFetcher, strategy_engine: StrategyEngine):
-        self.data_fetcher = data_fetcher
-        self.strategy_engine = strategy_engine
-        self.positions = []
-        self.logger = logger
-        self.ai_collector = AIDataCollector()
+    Workflow:
+    1. Fetch historical Nifty 50 OHLCV data
+    2. Walk forward through each candle
+    3. Update synthetic option chain at each step
+    4. Ask the strategy for signals (ENTER/EXIT/HOLD)
+    5. Simulate option P&L using Black-Scholes
+    6. Track equity curve and compute performance metrics
+    """
     
-    def _generate_mock_data(self, from_date: str, to_date: str, interval: str):
-        """Generate mock OHLC data for backtesting when real data is unavailable."""
-        try:
-            start = pd.to_datetime(from_date)
-            end = pd.to_datetime(to_date)
-            
-            # Generate hourly data between dates (limited to 500 candles for speed)
-            dates = pd.date_range(start=start, end=end, freq='1H')
-            if len(dates) > 500:
-                dates = dates[:500]  # Limit to 500 candles max
-            
-            if len(dates) == 0:
-                return None
-            
-            # Generate realistic price movements around 26000 (Nifty 50 typical range)
-            base_price = 26000
-            returns = np.random.normal(0.0001, 0.005, len(dates))
-            prices = base_price * np.exp(np.cumsum(returns))
-            
-            df = pd.DataFrame({
-                'timestamp': dates,
-                'open': prices * (1 + np.random.uniform(-0.002, 0.002, len(dates))),
-                'high': prices * (1 + np.abs(np.random.uniform(0, 0.01, len(dates)))),
-                'low': prices * (1 - np.abs(np.random.uniform(0, 0.01, len(dates)))),
-                'close': prices,
-                'volume': np.random.randint(100000, 1000000, len(dates)),
-                'oi': 0
-            })
-            
-            df = df.set_index('timestamp')
-            self.logger.debug(f"✅ Generated {len(df)} mock candles from {from_date} to {to_date}")
-            return df
-        except Exception as e:
-            self.logger.error(f"❌ Error generating mock data: {e}")
-            return None
-        
-    def run_backtest(self, symbol: str, from_date: str, to_date: str, 
-                     initial_capital: float = 100000, interval: str = '1minute') -> Dict:
+    def __init__(self, data_fetcher: DataFetcher = None):
+        if data_fetcher:
+            self.data_fetcher = data_fetcher
+        else:
+            try:
+                self.data_fetcher = DataFetcher(Config.API_KEY, Config.ACCESS_TOKEN)
+            except Exception:
+                self.data_fetcher = None  # Will use mock data
+        self.indicator_engine = StrategyEngine()
+        self.chain_manager = OptionChainManager()
+
+    
+    def run(
+        self,
+        strategy: BaseStrategy,
+        from_date: str,
+        to_date: str,
+        initial_capital: float = 1000000,
+        interval: str = "5minute",
+        default_iv: float = 0.13,
+        default_expiry_days: float = 3.0,
+    ) -> BacktestResult:
         """
-        Run backtest on historical data.
+        Run a full backtest for a given strategy.
         
         Args:
-            symbol: Instrument symbol (e.g., 'NSE_INDEX|Nifty 50')
+            strategy: Strategy instance to backtest
             from_date: Start date (YYYY-MM-DD)
             to_date: End date (YYYY-MM-DD)
-            initial_capital: Starting capital
-            interval: Timeframe (1minute, 30minute, day)
+            initial_capital: Starting paper capital in ₹
+            interval: Candle interval
+            default_iv: Default implied volatility for BS pricing
+            default_expiry_days: Default days-to-expiry assumption
         
         Returns:
-            Backtest results dictionary
+            BacktestResult with trades, equity curve, and metrics
         """
-        self.logger.info(f"📊 Starting Backtest: {from_date} to {to_date}")
+        logger.info(
+            f"🔄 Backtesting {strategy.display_name} | "
+            f"{from_date} → {to_date} | Capital: ₹{initial_capital:,.0f}"
+        )
         
-        try:
-            # Fetch historical data
-            self.logger.info(f"📥 Fetching data for {symbol}...")
-            df = self.data_fetcher.get_historical_data(symbol, interval, from_date, to_date)
-            
-            # For backtest, use mock data by default to avoid API hangs
-            # Real data would be fetched only if available
-            if df is None or df.empty:
-                self.logger.info(f"⚠️  No real data available, generating mock data for testing...")
-                df = self._generate_mock_data(from_date, to_date, interval)
-            
-            if df is None or df.empty:
-                error_msg = "Unable to fetch or generate historical data"
-                self.logger.error(f"❌ {error_msg}")
-                return {"error": error_msg, "total_trades": 0, "trades": [], "metrics": {}}
-            
-            self.logger.info(f"✅ Data loaded: {len(df)} candles")
-        except Exception as e:
-            self.logger.warning(f"⚠️  Error fetching data: {e}, using mock data...")
-            df = self._generate_mock_data(from_date, to_date, interval)
-            if df is None or df.empty:
-                error_msg = f"Failed to generate mock data: {str(e)}"
-                self.logger.error(f"❌ {error_msg}")
-                return {"error": error_msg, "total_trades": 0, "trades": [], "metrics": {}}
+        # ── Fetch historical data ─────────────────────────────────────
+        df = self._fetch_data(from_date, to_date, interval)
+        if df is None or df.empty:
+            logger.error("No historical data available for backtest")
+            return BacktestResult(
+                strategy_name=strategy.name,
+                from_date=from_date,
+                to_date=to_date,
+                initial_capital=initial_capital,
+                final_capital=initial_capital,
+            )
         
-        # Initialize
+        # ── Initialize tracking ───────────────────────────────────────
         capital = initial_capital
-        risk_manager = RiskManager(initial_capital=initial_capital)
-        self.trades = []
-        self.positions = []
+        equity_curve = [initial_capital]
+        equity_timestamps = [from_date]
+        trade_records: List[TradeRecord] = []
+        open_position: Optional[MultiLegPosition] = None
         
-        # Pre-calculate indicators for the entire dataframe to speed up backtest
-        self.logger.info("🧮 Pre-calculating indicators...")
-        df['rsi'] = self.strategy_engine.calculate_rsi(df['close'])
-        df['supertrend'], _, _ = self.strategy_engine.calculate_supertrend(df)
-        df['vwap'] = self.strategy_engine.calculate_vwap(df)
+        # Track simulated expiry cycling
+        days_since_expiry_reset = 0.0
+        current_expiry_days = default_expiry_days
         
-        # Simulate candlestick by candlestick
-        signal_counts = {"BUY_CE": 0, "BUY_PE": 0, "HOLD": 0}
+        logger.info(f"📊 Processing {len(df)} candles...")
         
-        # For faster backtest, sample every N candles instead of processing all
-        sample_interval = max(1, len(df) // 100)  # Max 100 iterations for speed
-        
-        for i in range(50, len(df), sample_interval):
-            # Get slice of data up to current candle
-            current_data = df.iloc[:i+1].copy()
-            current_price = current_data['close'].iloc[-1]
-            current_time = pd.Timestamp(current_data.index[-1])  # Ensure it's a proper Timestamp
+        # ── Walk forward through candles ──────────────────────────────
+        for i in range(30, len(df)):  # Start after enough data for indicators
+            row = df.iloc[i]
+            spot_price = float(row["close"])
+            current_time = row.name if isinstance(row.name, datetime.datetime) else datetime.datetime.now()
             
-            # Check if we have open positions to exit
-            if self.positions:
-                capital = self._check_exits(current_price, current_time, risk_manager, capital)
+            # Calculate time elapsed (for theta decay)
+            if i > 30:
+                prev_time = df.index[i - 1] if isinstance(df.index[i - 1], datetime.datetime) else current_time
+                minutes_elapsed = max(1, (current_time - prev_time).total_seconds() / 60)
+            else:
+                minutes_elapsed = 5  # Default 5-min candle
             
-            # Also force close positions that are older than 5 candles for demo
-            for pos in self.positions[:]:
-                candles_held = i - 50  # Approximate based on loop position
-                if candles_held > 5:
-                    exit_cost = current_price * pos.quantity  # Money received from selling
-                    entry_cost = pos.entry_price * pos.quantity  # Money paid when buying
-                    pnl = exit_cost - entry_cost  # Net P&L
-                    pnl_pct = ((current_price - pos.entry_price) / pos.entry_price) * 100 if pos.entry_price > 0 else 0
-                    
-                    # Add exit proceeds back to capital
-                    capital += exit_cost
-                    
-                    trade = {
-                        "position_type": pos.position_type,
-                        "entry_price": round(pos.entry_price, 2),
-                        "exit_price": round(current_price, 2),
-                        "quantity": pos.quantity,
-                        "entry_time": str(pd.Timestamp(pos.entry_time).strftime('%Y-%m-%d %H:%M:%S')),
-                        "exit_time": str(pd.Timestamp(current_time).strftime('%Y-%m-%d %H:%M:%S')),
-                        "pnl": round(pnl, 2),
-                        "pnl_pct": round(pnl_pct, 2),
-                        "reason": "AUTO_EXIT_TIME_LIMIT"
-                    }
-                    
-                    self.trades.append(trade)
-                    self.positions.remove(pos)
+            # Simulate expiry cycling: reset every ~5 trading days
+            days_since_expiry_reset += minutes_elapsed / (60 * 6.25)
+            if days_since_expiry_reset >= 5:
+                current_expiry_days = default_expiry_days
+                days_since_expiry_reset = 0
+            else:
+                current_expiry_days = max(0.1, current_expiry_days - minutes_elapsed / (60 * 6.25))
             
-            # Generate signal - simplified for speed
-            try:
-                # Use real strategy logic
-                # We pass the slice of dataframe up to current candle
-                # Since we pre-calculated indicators, we can just pass the row or the slice
-                # But check_signal expects a DF and looks at the last row
-                
-                # Optimization: check_signal will re-calculate if columns missing, but we added them.
-                # However, check_signal looks at the LAST row of the passed DF.
-                # So we pass current_data which is df.iloc[:i+1]
-                
-                strategy_result = self.strategy_engine.check_signal(
-                    current_data, 
-                    pcr=None, 
-                    greeks=None, 
-                    backtest_mode=True
+            # ── Update option chain (synthetic) ───────────────────────
+            self.chain_manager.update(spot_price, force=True)
+            
+            # ── Calculate indicators ──────────────────────────────────
+            lookback = df.iloc[max(0, i - 100):i + 1].copy()
+            indicators = self._calculate_indicators(lookback)
+            
+            # ── Check for exit if position is open ────────────────────
+            if open_position and open_position.is_open:
+                # Update position P&L
+                self._update_position_pnl(
+                    open_position, spot_price, current_expiry_days, default_iv, minutes_elapsed
                 )
-                
-                signal = strategy_result['signal']
-                
-                signal_counts[signal] = signal_counts.get(signal, 0) + 1
-                
-                # Only take new positions if no open positions
-                if signal in ["BUY_CE", "BUY_PE"] and len(self.positions) == 0:
-                    # Check if we can trade
-                    can_trade, reason = risk_manager.can_trade(capital, len(self.positions))
-                    
-                    if can_trade:
-                        # Execute Trade
-                        entry_price = current_price
-                        quantity = risk_manager.calculate_position_size(
-                            entry_price=entry_price,
-                            stop_loss_pct=0.30, # Default SL
-                            current_balance=capital
-                        )
-                        
-                        if quantity > 0:
-                            position = Position(
-                                instrument_key=symbol, # In real backtest this would be option key
-                                entry_price=entry_price,
-                                quantity=quantity,
-                                position_type="CE" if signal == "BUY_CE" else "PE"
-                            )
-                            self.positions.append(position)
-                            
-                            # Log for AI Training
-                            market_data = {
-                                "symbol": symbol,
-                                "open": current_data['open'].iloc[-1],
-                                "high": current_data['high'].iloc[-1],
-                                "low": current_data['low'].iloc[-1],
-                                "close": current_data['close'].iloc[-1],
-                                "volume": current_data['volume'].iloc[-1]
-                            }
-                            self.ai_collector.log_entry(
-                                trade_id=position.id,
-                                timestamp=current_time,
-                                market_data=market_data,
-                                indicators=strategy_result,
-                                signal=signal
-                            )
-                            
-                            print(f"  📈 BUY @ {entry_price:.2f} (Qty: {quantity}) at {current_time}")
-            except Exception as e:
-                print(f"  Error at {current_time}: {e}")
-                continue
-        
-        # Close any remaining positions at the end
-        if self.positions:
-            final_price = df['close'].iloc[-1]
-            final_time = df.index[-1]
-            capital = self._check_exits(final_price, final_time, risk_manager, capital, force_close=True)
-        
-        # Save AI Training Data
-        self.ai_collector.save_to_csv("ai_training_data.csv")
-        
-        print(f"\n📊 Signal Summary: BUY_CE={signal_counts.get('BUY_CE', 0)}, BUY_PE={signal_counts.get('BUY_PE', 0)}, HOLD={signal_counts.get('HOLD', 0)}")
-        print(f"💼 Total Trades Executed: {len(self.trades)}")
-        
-        # Calculate metrics
-        metrics = self._calculate_metrics(initial_capital, capital)
-        
-        return {
-            "initial_capital": initial_capital,
-            "final_capital": capital,
-            "total_pnl": capital - initial_capital,
-            "total_trades": len(self.trades),
-            "trades": self.trades,
-            "metrics": metrics
-        }
-    
-    def _check_exits(self, current_price: float, current_time, risk_manager: RiskManager, capital: float, force_close=False) -> float:
-        """Check and execute exits for open positions. Returns updated capital."""
-        positions_to_close = []
-        
-        for position in self.positions:
-            should_exit = force_close
-            reason = "BACKTEST_END" if force_close else ""
-            
-            if not should_exit:
-                # Update trailing stop
-                position.update_trailing_stop(current_price)
                 
                 # Check exit conditions
-                should_exit, reason = position.should_exit(current_price, current_time)
+                exit_conditions = strategy.get_exit_conditions(open_position)
+                current_pnl = open_position.total_unrealized_pnl
+                should_exit, exit_reason = exit_conditions.should_exit(current_pnl, current_time)
+                
+                if should_exit:
+                    # Close position
+                    trade = self._close_position(open_position, current_time, exit_reason)
+                    trade_records.append(trade)
+                    capital += trade.pnl
+                    open_position = None
+                    logger.debug(f"  EXIT: {exit_reason} | P&L: ₹{trade.pnl:.0f}")
             
-            if should_exit:
-                # Close position and update capital
-                exit_cost = current_price * position.quantity  # Money received from selling
-                entry_cost = position.entry_price * position.quantity  # Money paid when buying
-                pnl = exit_cost - entry_cost  # Net P&L
-                pnl_pct = ((current_price - position.entry_price) / position.entry_price) * 100
-                
-                # Add exit proceeds back to capital
-                capital += exit_cost
-                
-                trade = {
-                    "entry_time": position.entry_time.isoformat() if hasattr(position.entry_time, 'isoformat') else str(position.entry_time),
-                    "exit_time": current_time.isoformat() if hasattr(current_time, 'isoformat') else str(current_time),
-                    "position_type": position.position_type,
-                    "entry_price": round(position.entry_price, 2),
-                    "exit_price": round(current_price, 2),
-                    "quantity": position.quantity,
-                    "pnl": round(pnl, 2),
-                    "pnl_pct": round(pnl_pct, 2),
-                    "reason": reason
-                }
-                
-                self.trades.append(trade)
-                
-                # Update AI Collector
-                self.ai_collector.update_exit(
-                    trade_id=position.id,
-                    pnl=pnl,
-                    pnl_pct=pnl_pct,
-                    outcome=1 if pnl > 0 else 0
+            # ── Check for entry if no position ────────────────────────
+            if open_position is None:
+                signal = strategy.generate_signal(
+                    spot_price=spot_price,
+                    chain=self.chain_manager,
+                    indicators=indicators,
+                    current_time=current_time,
                 )
                 
-                risk_manager.update_daily_pnl(pnl)
-                positions_to_close.append(position)
-                
-                print(f"  📉 SELL @ {current_price:.2f} | {reason} | P&L: ₹{pnl:.2f} ({pnl_pct:.2f}%)")
-        
-        # Remove closed positions
-        for pos in positions_to_close:
-            self.positions.remove(pos)
+                if signal.action == SignalAction.ENTER and signal.legs:
+                    # Check if we have enough capital
+                    max_risk = strategy.calculate_max_risk(signal.legs)
+                    if max_risk <= capital * 0.5:  # Don't risk more than 50% on one trade
+                        open_position = self._open_position(signal, current_time)
+                        logger.debug(
+                            f"  ENTER: {signal.strategy_name} | "
+                            f"Risk: ₹{max_risk:.0f} | Premium: ₹{signal.net_premium:.0f}"
+                        )
             
-        return capital
+            # Track equity
+            unrealized = open_position.total_unrealized_pnl if open_position else 0
+            equity_curve.append(capital + unrealized)
+            equity_timestamps.append(current_time.isoformat() if isinstance(current_time, datetime.datetime) else str(current_time))
+        
+        # ── Force close any open position at end ──────────────────────
+        if open_position and open_position.is_open:
+            trade = self._close_position(
+                open_position,
+                df.index[-1] if isinstance(df.index[-1], datetime.datetime) else datetime.datetime.now(),
+                "Backtest period ended",
+            )
+            trade_records.append(trade)
+            capital += trade.pnl
+        
+        # ── Calculate metrics ─────────────────────────────────────────
+        metrics = self._calculate_metrics(
+            initial_capital, capital, trade_records, equity_curve
+        )
+        
+        logger.info(
+            f"✅ Backtest complete: {strategy.display_name} | "
+            f"Trades: {metrics.total_trades} | "
+            f"Win Rate: {metrics.win_rate:.0f}% | "
+            f"P&L: ₹{metrics.total_pnl:,.0f} ({metrics.total_return_pct:.1f}%) | "
+            f"Sharpe: {metrics.sharpe_ratio:.2f}"
+        )
+        
+        return BacktestResult(
+            strategy_name=strategy.name,
+            from_date=from_date,
+            to_date=to_date,
+            initial_capital=initial_capital,
+            final_capital=round(capital, 2),
+            trades=trade_records,
+            equity_curve=equity_curve,
+            equity_timestamps=equity_timestamps,
+            metrics=metrics,
+        )
     
-    def _calculate_metrics(self, initial_capital: float, final_capital: float) -> Dict:
-        """Calculate performance metrics."""
-        if not self.trades:
-            return {
-                "total_return_pct": 0,
-                "win_rate": 0,
-                "avg_win": 0,
-                "avg_loss": 0,
-                "profit_factor": 0,
-                "max_drawdown": 0
-            }
+    # ─── Private Helpers ────────────────────────────────────────────────────
+    
+    def _fetch_data(self, from_date: str, to_date: str, interval: str) -> Optional[pd.DataFrame]:
+        """Fetch historical data, with fallback to mock data."""
+        if self.data_fetcher:
+            try:
+                df = self.data_fetcher.get_historical_data(
+                    Config.SYMBOL_NIFTY_50, interval, from_date, to_date
+                )
+                if df is not None and not df.empty:
+                    return df
+            except Exception as e:
+                logger.warning(f"API data fetch failed: {e}")
         
-        wins = [t for t in self.trades if t['pnl'] > 0]
-        losses = [t for t in self.trades if t['pnl'] <= 0]
+        logger.info("Using generated mock data for backtest")
+        return self._generate_mock_data(from_date, to_date, interval)
+
+    
+    def _generate_mock_data(self, from_date: str, to_date: str, interval: str) -> pd.DataFrame:
+        """Generate realistic Nifty 50 mock OHLCV data."""
+        freq = "5min" if "5" in interval else "1min"
         
-        total_return_pct = ((final_capital - initial_capital) / initial_capital) * 100
-        win_rate = (len(wins) / len(self.trades)) * 100 if self.trades else 0
-        avg_win = sum(t['pnl'] for t in wins) / len(wins) if wins else 0
-        avg_loss = sum(t['pnl'] for t in losses) / len(losses) if losses else 0
+        start = pd.Timestamp(from_date)
+        end = pd.Timestamp(to_date)
         
-        total_wins = sum(t['pnl'] for t in wins)
-        total_losses = abs(sum(t['pnl'] for t in losses))
-        profit_factor = total_wins / total_losses if total_losses > 0 else 0
+        # Generate timestamps for market hours only (9:15 - 15:30)
+        all_dates = pd.bdate_range(start, end)
+        timestamps = []
+        for date in all_dates:
+            market_open = date.replace(hour=9, minute=15)
+            market_close = date.replace(hour=15, minute=30)
+            day_ts = pd.date_range(market_open, market_close, freq=freq)
+            timestamps.extend(day_ts)
         
-        # Simple max drawdown calculation
-        running_capital = initial_capital
-        peak = initial_capital
-        max_drawdown = 0
+        if not timestamps:
+            return pd.DataFrame()
         
-        for trade in self.trades:
-            running_capital += trade['pnl']
-            if running_capital > peak:
-                peak = running_capital
-            drawdown = ((peak - running_capital) / peak) * 100
-            if drawdown > max_drawdown:
-                max_drawdown = drawdown
+        n = len(timestamps)
         
+        # Simulate realistic price movement
+        base_price = 23500.0
+        returns = np.random.normal(0, 0.001, n)  # ~0.1% per candle
+        
+        # Add some trend and mean reversion
+        trend = np.cumsum(returns) * base_price
+        prices = base_price + trend
+        
+        # Add some noise for OHLC
+        highs = prices + np.abs(np.random.normal(0, 15, n))
+        lows = prices - np.abs(np.random.normal(0, 15, n))
+        opens = prices + np.random.normal(0, 5, n)
+        volumes = np.random.randint(5000, 50000, n)
+        
+        df = pd.DataFrame({
+            "open": opens,
+            "high": highs,
+            "low": lows,
+            "close": prices,
+            "volume": volumes,
+            "oi": 0,
+        }, index=pd.DatetimeIndex(timestamps))
+        
+        return df
+    
+    def _calculate_indicators(self, df: pd.DataFrame) -> Dict:
+        """Calculate technical indicators using existing StrategyEngine."""
+        indicators = {}
+        
+        try:
+            if len(df) < 20:
+                return {"rsi": 50, "signal": "HOLD", "confidence": 0}
+            
+            # RSI
+            rsi_series = self.indicator_engine.calculate_rsi(df["close"], Config.RSI_PERIOD)
+            indicators["rsi"] = float(rsi_series.iloc[-1]) if not rsi_series.empty else 50
+            
+            # EMAs
+            ema_short = self.indicator_engine.calculate_ema(df["close"], Config.EMA_SHORT_PERIOD)
+            ema_long = self.indicator_engine.calculate_ema(df["close"], Config.EMA_LONG_PERIOD)
+            indicators["ema_short"] = float(ema_short.iloc[-1]) if not ema_short.empty else 0
+            indicators["ema_long"] = float(ema_long.iloc[-1]) if not ema_long.empty else 0
+            
+            # VWAP
+            if "volume" in df.columns:
+                try:
+                    vwap = self.indicator_engine.calculate_vwap(df)
+                    indicators["vwap"] = float(vwap.iloc[-1]) if vwap is not None and not vwap.empty else 0
+                except Exception:
+                    indicators["vwap"] = 0
+            
+            # Supertrend
+            try:
+                st_result = self.indicator_engine.calculate_supertrend(df)
+                if st_result is not None and "direction" in st_result.columns:
+                    indicators["supertrend_direction"] = "UP" if st_result["direction"].iloc[-1] == 1 else "DOWN"
+                else:
+                    indicators["supertrend_direction"] = None
+            except Exception:
+                indicators["supertrend_direction"] = None
+            
+            # ATR
+            try:
+                atr = self.indicator_engine.calculate_atr(df)
+                indicators["atr"] = float(atr.iloc[-1]) if atr is not None and not atr.empty else 0
+            except Exception:
+                indicators["atr"] = 30  # Default ~30 pts
+            
+            # Breakout detection
+            try:
+                breakout = self.indicator_engine.detect_breakout(df)
+                indicators["breakout"] = breakout if breakout else {"is_breakout": False}
+            except Exception:
+                indicators["breakout"] = {"is_breakout": False}
+            
+            # Volume
+            if "volume" in df.columns:
+                indicators["current_volume"] = int(df["volume"].iloc[-1])
+                try:
+                    avg_vol = self.indicator_engine.calculate_avg_volume(df)
+                    indicators["avg_volume"] = float(avg_vol) if avg_vol else 10000
+                except Exception:
+                    indicators["avg_volume"] = int(df["volume"].mean())
+            
+            # Get full signal from engine (for directional strategies)
+            try:
+                signal_result = self.indicator_engine.check_signal(df, backtest_mode=True)
+                if signal_result:
+                    indicators["signal"] = signal_result.get("signal", "HOLD")
+                    indicators["confidence"] = signal_result.get("confidence", 0)
+                else:
+                    indicators["signal"] = "HOLD"
+                    indicators["confidence"] = 0
+            except Exception:
+                indicators["signal"] = "HOLD"
+                indicators["confidence"] = 0
+            
+        except Exception as e:
+            logger.debug(f"Indicator calculation error: {e}")
+            indicators = {"rsi": 50, "signal": "HOLD", "confidence": 0}
+        
+        return indicators
+    
+    def _open_position(self, signal: StrategySignal, entry_time: datetime.datetime) -> MultiLegPosition:
+        """Convert a strategy signal into an open position."""
+        position_id = str(uuid.uuid4())[:8]
+        
+        position_legs = []
+        for i, leg in enumerate(signal.legs):
+            position_legs.append(PositionLeg(
+                leg_id=f"{position_id}_L{i}",
+                instrument_key=leg.instrument_key,
+                strike=leg.strike,
+                option_type=leg.option_type,
+                transaction_type=leg.transaction_type,
+                quantity=leg.quantity,
+                entry_price=leg.price,
+                current_price=leg.price,
+            ))
+        
+        return MultiLegPosition(
+            position_id=position_id,
+            strategy_name=signal.strategy_name,
+            legs=position_legs,
+            entry_time=entry_time,
+            is_open=True,
+            max_risk=signal.max_risk,
+            max_reward=signal.max_reward,
+        )
+    
+    def _update_position_pnl(
+        self,
+        position: MultiLegPosition,
+        spot_price: float,
+        expiry_days: float,
+        iv: float,
+        minutes_elapsed: float,
+    ):
+        """Update current prices for all legs using Black-Scholes."""
+        for leg in position.legs:
+            new_price = estimate_premium_change(
+                spot_old=leg.entry_price,  # Correct reference: option's entry price
+                spot_new=spot_price,
+                strike=leg.strike,
+                expiry_days=expiry_days,
+                sigma=iv,
+                option_type=leg.option_type.value,
+                time_elapsed_minutes=minutes_elapsed,
+            )
+            leg.current_price = max(0.05, new_price)  # Min price 0.05
+    
+    def _close_position(
+        self,
+        position: MultiLegPosition,
+        exit_time: datetime.datetime,
+        exit_reason: str,
+    ) -> TradeRecord:
+        """Close position and create trade record."""
+        position.is_open = False
+        position.exit_time = exit_time
+        position.exit_reason = exit_reason
+        
+        pnl = position.total_unrealized_pnl
+        entry_premium = abs(position.net_entry_premium)
+
+        # Calculate exit premium
+        exit_premium = 0
+        for leg in position.legs:
+            sign = -1 if leg.transaction_type == TransactionType.BUY else 1
+            exit_premium += sign * leg.current_price * leg.quantity
+
+        # Realistic transaction costs (applied at close; same costs incurred at entry)
+        # Slippage: 1 point per leg (bid-ask spread impact, each side)
+        # Exchange charges: ~0.05% of gross premium turnover (NSE + SEBI charges)
+        num_legs = len(position.legs)
+        leg_qty = position.legs[0].quantity if position.legs else 1
+        slippage = num_legs * 1.0 * leg_qty * 2  # 1 pt per leg × qty, entry + exit
+        gross_turnover = entry_premium + abs(exit_premium)
+        exchange_charges = gross_turnover * 0.0005
+        transaction_costs = slippage + exchange_charges
+        pnl -= transaction_costs
+
+        pnl_pct = (pnl / max(entry_premium, 1)) * 100 if entry_premium > 0 else 0
+        
+        # Duration in minutes
+        duration = 0
+        if isinstance(position.entry_time, datetime.datetime) and isinstance(exit_time, datetime.datetime):
+            duration = (exit_time - position.entry_time).total_seconds() / 60
+        
+        return TradeRecord(
+            trade_id=position.position_id,
+            strategy_name=position.strategy_name,
+            entry_time=position.entry_time,
+            exit_time=exit_time,
+            legs=[leg.to_dict() for leg in position.legs],
+            entry_premium=entry_premium,
+            exit_premium=abs(exit_premium),
+            pnl=round(pnl, 2),
+            pnl_pct=round(pnl_pct, 2),
+            exit_reason=exit_reason,
+            market_conditions={"duration_minutes": duration},
+        )
+    
+    def _calculate_metrics(
+        self,
+        initial_capital: float,
+        final_capital: float,
+        trades: List[TradeRecord],
+        equity_curve: List[float],
+    ) -> PerformanceMetrics:
+        """Calculate comprehensive performance metrics."""
+        metrics = PerformanceMetrics()
+        
+        if not trades:
+            metrics.total_pnl = final_capital - initial_capital
+            metrics.total_return_pct = (metrics.total_pnl / initial_capital) * 100
+            return metrics
+        
+        pnls = [t.pnl for t in trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p <= 0]
+        
+        metrics.total_trades = len(trades)
+        metrics.winning_trades = len(wins)
+        metrics.losing_trades = len(losses)
+        metrics.win_rate = (len(wins) / len(trades)) * 100 if trades else 0
+        metrics.total_pnl = sum(pnls)
+        metrics.total_return_pct = (metrics.total_pnl / initial_capital) * 100
+        metrics.avg_win = sum(wins) / len(wins) if wins else 0
+        metrics.avg_loss = sum(losses) / len(losses) if losses else 0
+        metrics.best_trade = max(pnls) if pnls else 0
+        metrics.worst_trade = min(pnls) if pnls else 0
+        
+        # Profit factor
+        total_wins = sum(wins) if wins else 0
+        total_losses = abs(sum(losses)) if losses else 0
+        metrics.profit_factor = total_wins / total_losses if total_losses > 0 else float("inf")
+        
+        # Expectancy = (Win% × Avg Win) - (Loss% × |Avg Loss|)
+        win_pct = len(wins) / len(trades) if trades else 0
+        loss_pct = len(losses) / len(trades) if trades else 0
+        metrics.expectancy = (win_pct * metrics.avg_win) - (loss_pct * abs(metrics.avg_loss))
+        
+        # Average trade duration
+        durations = [t.market_conditions.get("duration_minutes", 0) for t in trades]
+        metrics.avg_trade_duration = sum(durations) / len(durations) if durations else 0
+        
+        # Max drawdown
+        if len(equity_curve) > 1:
+            peak = equity_curve[0]
+            max_dd = 0
+            for value in equity_curve:
+                if value > peak:
+                    peak = value
+                dd = peak - value
+                if dd > max_dd:
+                    max_dd = dd
+            metrics.max_drawdown = max_dd
+            metrics.max_drawdown_pct = (max_dd / peak) * 100 if peak > 0 else 0
+        
+        # Sharpe Ratio (annualized, assuming daily returns)
+        if len(pnls) > 1:
+            returns = np.array(pnls) / initial_capital
+            mean_return = np.mean(returns)
+            std_return = np.std(returns)
+            if std_return > 0:
+                # Annualize: assume ~252 trading days
+                metrics.sharpe_ratio = (mean_return / std_return) * math.sqrt(252)
+        
+        # Sortino Ratio (only downside deviation)
+        if len(pnls) > 1:
+            returns = np.array(pnls) / initial_capital
+            mean_return = np.mean(returns)
+            downside = returns[returns < 0]
+            if len(downside) > 0:
+                downside_std = np.std(downside)
+                if downside_std > 0:
+                    metrics.sortino_ratio = (mean_return / downside_std) * math.sqrt(252)
+        
+        return metrics
+
+
+# ─── Backward Compatibility ────────────────────────────────────────────────
+
+class Backtester(StrategyBacktester):
+    """
+    Legacy compatibility wrapper.
+    Keeps the old run_backtest() interface working with the new engine.
+    """
+    
+    def __init__(self, data_fetcher=None, strategy_engine=None):
+        super().__init__(data_fetcher)
+        if strategy_engine:
+            self.indicator_engine = strategy_engine
+    
+    def run_backtest(
+        self,
+        symbol: str = "NSE_INDEX|Nifty 50",
+        from_date: str = "2025-01-01",
+        to_date: str = "2025-01-31",
+        initial_capital: float = 100000,
+        interval: str = "5minute",
+    ) -> dict:
+        """Legacy interface — runs Iron Condor by default."""
+        from app.strategies.iron_condor import IronCondorStrategy
+        
+        strategy = IronCondorStrategy()
+        result = self.run(strategy, from_date, to_date, initial_capital, interval)
+        
+        # Convert to legacy dict format
         return {
-            "total_return_pct": round(total_return_pct, 2),
-            "win_rate": round(win_rate, 2),
-            "avg_win": round(avg_win, 2),
-            "avg_loss": round(avg_loss, 2),
-            "profit_factor": round(profit_factor, 2),
-            "max_drawdown_pct": round(max_drawdown, 2)
+            "total_trades": result.metrics.total_trades,
+            "winning_trades": result.metrics.winning_trades,
+            "losing_trades": result.metrics.losing_trades,
+            "trades": [t.to_dict() for t in result.trades],
+            "metrics": result.metrics.to_dict(),
+            "equity_curve": result.equity_curve,
+            "initial_capital": result.initial_capital,
+            "final_capital": result.final_capital,
         }

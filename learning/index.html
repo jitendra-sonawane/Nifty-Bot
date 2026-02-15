@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>React Fiber Visualizer</title>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            font-family: 'Segoe UI', sans-serif;
+            background: #1e1e1e;
+            color: white;
+        }
+
+        /* SPLIT SCREEN */
+        #app-panel {
+            flex: 1;
+            border-right: 2px solid #333;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: #1e1e1e;
+        }
+
+        #fiber-panel {
+            flex: 1;
+            background: #111;
+            overflow: auto;
+            padding: 20px;
+            position: relative;
+        }
+
+        /* FIBER NODES */
+        .fiber-node {
+            border: 1px solid #444;
+            background: #252526;
+            margin: 10px;
+            padding: 10px;
+            border-radius: 6px;
+            font-size: 14px;
+            width: fit-content;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+        }
+
+        .fiber-node:hover {
+            border-color: #007acc;
+            background: #2d2d30;
+        }
+
+        /* TAG STYLES */
+        .tag-host-root {
+            border-top: 4px solid #bada55;
+        }
+
+        .tag-function {
+            border-top: 4px solid #61dafb;
+        }
+
+        .tag-host {
+            border-top: 4px solid #ff79c6;
+        }
+
+        .node-title {
+            font-weight: bold;
+            margin-bottom: 4px;
+            display: block;
+        }
+
+        .node-tag {
+            font-size: 10px;
+            color: #888;
+            text-transform: uppercase;
+        }
+
+        .node-state {
+            background: #000;
+            padding: 4px 8px;
+            border-radius: 4px;
+            color: #ffeb3b;
+            font-family: monospace;
+            margin-top: 6px;
+        }
+
+        /* HOOKS VISUALIZATION */
+        .hooks-list {
+            margin-top: 8px;
+            border-top: 1px dotted #555;
+            padding-top: 4px;
+        }
+
+        .hook-item {
+            background: #333;
+            margin: 2px 0;
+            padding: 4px;
+            border-radius: 3px;
+            font-size: 11px;
+            display: flex;
+            align-items: center;
+        }
+
+        .hook-num {
+            background: #555;
+            color: #fff;
+            padding: 2px 5px;
+            border-radius: 3px;
+            margin-right: 6px;
+            font-weight: bold;
+        }
+
+        .hook-val {
+            color: #aaa;
+            font-family: monospace;
+        }
+
+        .hook-active {
+            color: #85ff85;
+            font-weight: bold;
+        }
+
+        /* CONNECTOR LINES */
+        .children-container {
+            margin-left: 20px;
+            padding-left: 20px;
+            border-left: 1px dashed #444;
+        }
+
+        /* ACTIONS */
+        button {
+            padding: 10px 20px;
+            font-size: 18px;
+            cursor: pointer;
+            background: #007acc;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+
+        button:hover {
+            background: #005f9e;
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- LEFT PANEL: React App -->
+    <div id="app-panel">
+        <div id="root"></div>
+    </div>
+
+    <!-- RIGHT PANEL: Visualizer -->
+    <div id="fiber-panel">
+        <h2 style="color: #666; margin-top: 0;">Fiber Tree Visualization</h2>
+        <div id="tree-container"></div>
+    </div>
+
+    <!-- SCRIPTS -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+
+    <script>
+        // --- LOGGING UTILS ---
+        const logContainer = document.createElement('div');
+        logContainer.style.cssText = 'font-family:monospace; font-size:12px; color:#aaa; margin-bottom:10px; padding:10px; background:#222; border:1px solid #444; max-height:100px; overflow:auto;';
+        document.getElementById('fiber-panel').insertBefore(logContainer, document.getElementById('tree-container'));
+
+        function statusLog(msg, type = 'info') {
+            const line = document.createElement('div');
+            line.textContent = `> ${msg}`;
+            if (type === 'error') line.style.color = '#ff5555';
+            if (type === 'success') line.style.color = '#55ff55';
+            logContainer.insertBefore(line, logContainer.firstChild);
+        }
+
+        // --- FIBER UTILS ---
+        function getRootFiber() {
+            const dom = document.querySelector('#root');
+            if (!dom) {
+                statusLog("❌ DOM Element #root not found!", 'error');
+                return null;
+            }
+
+            const allKeys = Object.keys(dom);
+            // Look for ANY key starting with __react
+            const key = allKeys.find(k => k.startsWith("__react"));
+
+            if (!key) {
+                statusLog(`⚠️ No React key found on #root. Available: ${allKeys.join(', ') || 'none'}`, 'error');
+                return null;
+            }
+
+            statusLog(`✅ Found Root Key: ${key}`, 'success');
+            return dom[key];
+        }
+
+        // --- VISUALIZER ---
+        const treeContainer = document.getElementById('tree-container');
+
+        // Add Refresh Button
+        const refreshBtn = document.createElement('button');
+        refreshBtn.textContent = "🔄 Force Refresh Root";
+        refreshBtn.style.cssText = "font-size:12px; padding:5px 10px; margin-bottom:10px; background:#444; color:white; border:none; cursor:pointer;";
+        refreshBtn.onclick = drawTree;
+        document.getElementById('fiber-panel').insertBefore(refreshBtn, treeContainer);
+
+        function renderFiberNode(fiber) {
+            if (!fiber) return null;
+
+            // 1. Create Element
+            const el = document.createElement('div');
+            el.className = 'fiber-node';
+
+            // 2. Identify Type
+            let name = fiber.type;
+            let tagClass = '';
+
+            if (fiber.tag === 3) { name = 'HostRoot (#root)'; tagClass = 'tag-host-root'; }
+            else if (fiber.tag === 0) { name = `FunctionComponent (${fiber.type.name})`; tagClass = 'tag-function'; }
+            else if (fiber.tag === 5) { name = `HostComponent <${fiber.type}>`; tagClass = 'tag-host'; }
+            else { name = `Other (Tag: ${fiber.tag})`; }
+
+            el.classList.add(tagClass);
+
+            // 3. Content
+            let html = `<span class="node-tag">Tag ${fiber.tag}</span><span class="node-title">${name}</span>`;
+
+            // Show State/Hooks for Function Components
+            if (fiber.tag === 0 && fiber.memoizedState) {
+                html += `<div class="hooks-list"><div style="color:#888; margin-bottom:4px;">Hooks Linked List:</div>`;
+
+                let hook = fiber.memoizedState;
+                let i = 1;
+                while (hook) {
+                    let val = hook.memoizedState;
+                    if (typeof val === 'object' && val !== null) {
+                        try { val = JSON.stringify(val).substring(0, 30) + (JSON.stringify(val).length > 30 ? '...' : ''); } catch (e) { val = '{...}'; }
+                    }
+
+                    html += `<div class="hook-item">
+                        <span class="hook-num">#${i}</span>
+                        <span class="hook-val hook-active">${val}</span>
+                        ${hook.queue ? '<span style="color:#444; margin-left:5px;">(Queue)</span>' : ''}
+                    </div>`;
+
+                    // Move to next node in Linked List
+                    hook = hook.next;
+                    i++;
+                }
+                html += `</div>`;
+            }
+            // Show Text Content for Host Components if simple
+            if (fiber.tag === 5 && fiber.memoizedProps.children && typeof fiber.memoizedProps.children === 'string') {
+                html += `<div style="font-size:12px; color:#aaa;">"${fiber.memoizedProps.children}"</div>`;
+            }
+
+            el.innerHTML = html;
+
+            const wrapper = document.createElement('div');
+            wrapper.appendChild(el);
+
+            // 4. Render Children (Recursive)
+            if (fiber.child) {
+                const childContainer = document.createElement('div');
+                childContainer.className = 'children-container';
+
+                // Iterate through ALL siblings at this level
+                let child = fiber.child;
+                while (child) {
+                    const childNode = renderFiberNode(child);
+                    if (childNode) childContainer.appendChild(childNode);
+                    child = child.sibling;
+                }
+
+                wrapper.appendChild(childContainer);
+            }
+
+            return wrapper;
+        }
+
+        function drawTree() {
+            treeContainer.innerHTML = ''; // Clear
+            statusLog('Drawing Tree...', 'info');
+
+            try {
+                let rootNode = getRootFiber();
+
+                if (rootNode) {
+                    // Navigate to current if it's a container
+                    if (rootNode.current) {
+                        statusLog('HostRoot found at .current', 'info');
+                        rootNode = rootNode.current;
+                    }
+
+                    const tree = renderFiberNode(rootNode);
+                    treeContainer.appendChild(tree);
+                    statusLog('Tree Rendered Successfully', 'success');
+                } else {
+                    treeContainer.innerHTML = '<div style="color:red; padding:20px;">Waiting for React Root...<br>(Check logs above)</div>';
+                }
+            } catch (err) {
+                statusLog(`❌ Error drawing tree: ${err.message}`, 'error');
+                console.error(err);
+            }
+        }
+
+        // --- REACT APP ---
+        const rootElement = document.getElementById("root");
+        const root = ReactDOM.createRoot(rootElement);
+
+        function App() {
+            const [count, setCount] = React.useState(0);
+
+            // HOOK INTO COMMIT PHASE
+            React.useEffect(() => {
+                // Determine if this is mount or update based on count, 
+                // but really we just want to re-draw after every commit.
+                setTimeout(drawTree, 0); // Defer slightly to ensure Fiber is updated
+            });
+
+            return React.createElement('div', { style: { textAlign: 'center' } },
+                React.createElement('h1', {}, "Count: " + count),
+                React.createElement('button', { onClick: () => setCount(c => c + 1) }, "Increment")
+            );
+        }
+
+        root.render(React.createElement(App));
+
+        // Initial Draw
+        setTimeout(drawTree, 500);
+
+    </script>
+</body>
+
+</html>

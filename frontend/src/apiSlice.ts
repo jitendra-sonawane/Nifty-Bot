@@ -1,4 +1,11 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react';
+import type { HeatmapStock } from './features/market/NiftyHeatmap';
+import type { IntelligenceContext, ModuleToggleState } from './types/api';
+
+export interface Nifty50HeatmapResponse {
+    stocks: HeatmapStock[];
+    error?: string;
+}
 
 export interface GreeksUpdate {
     type: 'greeks_update';
@@ -65,7 +72,6 @@ export interface StatusResponse {
         macd?: number;
         macd_signal?: number;
         supertrend?: string;
-        vwap?: number;
         bb_upper?: number;
         bb_lower?: number;
         greeks?: {
@@ -91,7 +97,6 @@ export interface StatusResponse {
         };
         filters?: {
             supertrend: boolean;
-            price_vwap: boolean;
             rsi: boolean;
             volume: boolean;
             volatility: boolean;
@@ -138,13 +143,17 @@ export interface StatusResponse {
         id: string;
         instrument_key: string;
         entry_price: number;
+        current_price: number;
         quantity: number;
         position_type: string;
+        strike?: number;
         stop_loss: number;
         target: number;
         trailing_sl: number | null;
         trailing_sl_activated: boolean;
         entry_time: string;
+        unrealized_pnl: number;
+        unrealized_pnl_pct: number;
     }>;
     risk_stats?: {
         daily_pnl: number;
@@ -153,19 +162,8 @@ export interface StatusResponse {
         max_concurrent_positions: number;
         is_trading_allowed: boolean;
     };
-    trade_history?: Array<{
-        position_id: string;
-        instrument: string;
-        type: string;
-        entry_price: number;
-        exit_price: number;
-        quantity: number;
-        pnl: number;
-        pnl_pct: number;
-        reason: string;
-        entry_time: string;
-        exit_time: string;
-    }>;
+    trade_history?: TradeRecord[];
+    portfolio_stats?: PortfolioStats;
     auth?: {
         authenticated: boolean;
         token_status: {
@@ -175,11 +173,82 @@ export interface StatusResponse {
             error_message: string | null;
         };
     };
+    intelligence?: IntelligenceContext;
+}
+
+export interface TradeLeg {
+    instrument_key: string;
+    option_type: string;
+    transaction_type: string;
+    quantity: number;
+    entry_price: number;
+    exit_price?: number;
+    unrealized_pnl?: number;
+    strike?: number;
+    leg_id?: string;
+}
+
+export interface TradeRecord {
+    trade_id: string;
+    strategy_name: string;
+    entry_time: string;
+    exit_time: string;
+    duration_minutes: number;
+    legs: TradeLeg[];
+    entry_premium: number;
+    exit_premium: number;
+    pnl: number;
+    pnl_pct: number;
+    exit_reason: string;
+    // Legacy single-leg fields (may be present for old trades)
+    position_id?: string;
+    instrument?: string;
+    type?: string;
+    entry_price?: number;
+    exit_price?: number;
+    quantity?: number;
+    reason?: string;
+}
+
+export interface StrategyAnalytics {
+    total_trades: number;
+    winning_trades: number;
+    losing_trades: number;
+    win_rate: number;
+    total_pnl: number;
+    avg_pnl: number;
+    best_trade: number;
+    worst_trade: number;
+    profit_factor: number;
+}
+
+export interface PortfolioStats {
+    initial_capital: number;
+    current_balance: number;
+    total_equity: number;
+    unrealized_pnl: number;
+    realized_pnl: number;
+    session_pnl: number;
+    total_return_pct: number;
+    open_positions: number;
+    total_trades: number;
+    winning_trades: number;
+    losing_trades: number;
+    win_rate: number;
+    avg_win: number;
+    avg_loss: number;
+    best_trade: number;
+    worst_trade: number;
+    profit_factor: number;
+    strategy_analytics: Record<string, StrategyAnalytics>;
 }
 
 export const apiSlice = createApi({
     reducerPath: 'api',
-    baseQuery: fetchBaseQuery({ baseUrl: 'http://localhost:8000' }),
+    baseQuery: fetchBaseQuery({
+        baseUrl: 'http://localhost:8000',
+        timeout: 6000,
+    }),
     tagTypes: ['Status'],
     endpoints: (builder) => ({
         getStatus: builder.query<StatusResponse, void>({
@@ -198,8 +267,10 @@ export const apiSlice = createApi({
                 let ws: WebSocket | null = null;
                 let wsConnected = false;
                 let reconnectAttempts = 0;
-                const maxReconnectAttempts = 5;
-                const reconnectDelay = 3000; // 3 seconds
+                // Infinite retries for status connection to ensure resilience
+                const maxReconnectAttempts = Infinity;
+                const baseReconnectDelay = 1000;
+                const maxReconnectDelay = 30000;
                 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
                 const connectWebSocket = () => {
@@ -246,38 +317,26 @@ export const apiSlice = createApi({
                         ws.onclose = () => {
                             wsConnected = false;
                             console.log('❌ WebSocket disconnected, will attempt to reconnect...');
-                            // Attempt to reconnect after delay
+                            // Attempt to reconnect with exponential backoff
                             reconnectAttempts++;
                             if (reconnectAttempts < maxReconnectAttempts) {
-                                reconnectTimeout = setTimeout(connectWebSocket, reconnectDelay);
+                                const delay = Math.min(baseReconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                                console.log(`Reconnecting status in ${delay}ms (Attempt ${reconnectAttempts})`);
+                                reconnectTimeout = setTimeout(connectWebSocket, delay);
                             }
                         };
                     } catch (error) {
                         console.error('Error creating WebSocket:', error);
                         reconnectAttempts++;
                         if (reconnectAttempts < maxReconnectAttempts) {
-                            reconnectTimeout = setTimeout(connectWebSocket, reconnectDelay);
+                            const delay = Math.min(baseReconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                            reconnectTimeout = setTimeout(connectWebSocket, delay);
                         }
                     }
                 };
 
                 // Initial connection attempt
                 connectWebSocket();
-
-                // Also set up HTTP polling as fallback (every 2 seconds)
-                const pollInterval = setInterval(async () => {
-                    try {
-                        const response = await fetch('http://localhost:8000/status');
-                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                        const data = await response.json();
-                        updateCachedData((draft) => {
-                            Object.assign(draft, data);
-                        });
-                    } catch (error) {
-                        // Silently ignore polling errors as WebSocket may be handling it
-                        console.debug('Polling fallback active');
-                    }
-                }, 2000);
 
                 await cacheEntryRemoved;
                 if (ws !== null && ws !== undefined) {
@@ -290,7 +349,6 @@ export const apiSlice = createApi({
                 if (reconnectTimeout) {
                     clearTimeout(reconnectTimeout);
                 }
-                clearInterval(pollInterval);
             },
             keepUnusedDataFor: 0,
         }),
@@ -306,8 +364,9 @@ export const apiSlice = createApi({
                 const wsUrl = `ws://localhost:8000/ws/greeks`;
                 let ws: WebSocket | null = null;
                 let reconnectAttempts = 0;
-                const maxReconnectAttempts = 5;
-                const reconnectDelay = 3000;
+                const maxReconnectAttempts = Infinity;
+                const baseReconnectDelay = 1000;
+                const maxReconnectDelay = 30000;
                 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
 
                 const connectWebSocket = () => {
@@ -355,14 +414,16 @@ export const apiSlice = createApi({
                             console.log('❌ Greeks WebSocket disconnected, will attempt to reconnect...');
                             reconnectAttempts++;
                             if (reconnectAttempts < maxReconnectAttempts) {
-                                reconnectTimeout = setTimeout(connectWebSocket, reconnectDelay);
+                                const delay = Math.min(baseReconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                                reconnectTimeout = setTimeout(connectWebSocket, delay);
                             }
                         };
                     } catch (error) {
                         console.error('Error creating Greeks WebSocket:', error);
                         reconnectAttempts++;
                         if (reconnectAttempts < maxReconnectAttempts) {
-                            reconnectTimeout = setTimeout(connectWebSocket, reconnectDelay);
+                            const delay = Math.min(baseReconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                            reconnectTimeout = setTimeout(connectWebSocket, delay);
                         }
                     }
                 };
@@ -395,8 +456,9 @@ export const apiSlice = createApi({
                 const wsUrl = `ws://localhost:8000/ws/status`; // Use same endpoint, filter by type
                 let ws: WebSocket | null = null;
                 let reconnectAttempts = 0;
-                const maxReconnectAttempts = 5;
-                const reconnectDelay = 2000;
+                const maxReconnectAttempts = Infinity;
+                const baseReconnectDelay = 1000;
+                const maxReconnectDelay = 30000;
 
                 const connectWebSocket = () => {
                     if (reconnectAttempts >= maxReconnectAttempts) {
@@ -432,12 +494,14 @@ export const apiSlice = createApi({
                         ws.onclose = () => {
                             console.log('PCR WebSocket disconnected, will attempt to reconnect...');
                             reconnectAttempts++;
-                            setTimeout(connectWebSocket, reconnectDelay);
+                            const delay = Math.min(baseReconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                            setTimeout(connectWebSocket, delay);
                         };
                     } catch (error) {
                         console.error('Error creating PCR WebSocket:', error);
                         reconnectAttempts++;
-                        setTimeout(connectWebSocket, reconnectDelay);
+                        const delay = Math.min(baseReconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                        setTimeout(connectWebSocket, delay);
                     }
                 };
 
@@ -513,6 +577,137 @@ export const apiSlice = createApi({
                 body,
             }),
         }),
+        toggleIntelligenceModule: builder.mutation<
+            { module: string; enabled: boolean; modules: ModuleToggleState },
+            { module: string; enabled: boolean }
+        >({
+            query: (body) => ({
+                url: '/intelligence/toggle',
+                method: 'POST',
+                body,
+            }),
+            invalidatesTags: ['Status'],
+        }),
+        // Portfolio stats
+        getPortfolioStats: builder.query<PortfolioStats, void>({
+            query: () => '/portfolio/stats',
+            providesTags: ['Status'],
+        }),
+        // Trade history / journal
+        getTradeHistory: builder.query<{ trades: TradeRecord[] }, { strategy?: string; limit?: number } | void>({
+            query: (params) => {
+                const p = params as { strategy?: string; limit?: number } | undefined;
+                const qs = new URLSearchParams();
+                if (p?.strategy) qs.set('strategy', p.strategy);
+                if (p?.limit) qs.set('limit', String(p.limit));
+                const q = qs.toString();
+                return `/portfolio/history${q ? `?${q}` : ''}`;
+            },
+            providesTags: ['Status'],
+        }),
+        // Reset portfolio
+        resetPortfolio: builder.mutation<{ message: string; stats: PortfolioStats }, void>({
+            query: () => ({ url: '/portfolio/reset', method: 'POST' }),
+            invalidatesTags: ['Status'],
+        }),
+        // Nifty 50 Heatmap
+        getNifty50Heatmap: builder.query<Nifty50HeatmapResponse, void>({
+            query: () => '/api/nifty50/heatmap',
+            keepUnusedDataFor: 60,
+        }),
+        // Nifty 50 Heatmap Streaming
+        streamNifty50Heatmap: builder.query<Nifty50HeatmapResponse, void>({
+            query: () => '/api/nifty50/heatmap', // Initial fetch via REST
+            async onCacheEntryAdded(
+                _arg,
+                { updateCachedData, cacheDataLoaded, cacheEntryRemoved }
+            ) {
+                await cacheDataLoaded;
+
+                const wsUrl = `ws://localhost:8000/ws/heatmap`;
+                let ws: WebSocket | null = null;
+                let reconnectAttempts = 0;
+                const maxReconnectAttempts = Infinity;
+                const baseReconnectDelay = 1000;
+                const maxReconnectDelay = 30000;
+                let reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
+
+                const connectWebSocket = () => {
+                    if (reconnectAttempts >= maxReconnectAttempts) {
+                        console.warn('Max Heatmap WebSocket reconnection attempts reached');
+                        return;
+                    }
+
+                    try {
+                        if (ws) {
+                            try {
+                                ws.close();
+                            } catch (e) {
+                                // Ignore
+                            }
+                            ws = null;
+                        }
+
+                        ws = new WebSocket(wsUrl);
+
+                        ws.onopen = () => {
+                            reconnectAttempts = 0;
+                            console.log('✅ WebSocket connected for Heatmap');
+                        };
+
+                        ws.onmessage = (event) => {
+                            try {
+                                const update = JSON.parse(event.data);
+                                if (update.type === 'heatmap_update' && update.stocks) {
+                                    updateCachedData((draft) => {
+                                        if (update.stocks && update.stocks.length > 0) {
+                                            draft.stocks = update.stocks;
+                                        }
+                                    });
+                                }
+                            } catch (error) {
+                                console.error('Error parsing Heatmap update:', error);
+                            }
+                        };
+
+                        ws.onerror = (error) => {
+                            console.error('⚠️ Heatmap WebSocket error:', error);
+                        };
+
+                        ws.onclose = () => {
+                            console.log('❌ Heatmap WebSocket disconnected, will attempt to reconnect...');
+                            reconnectAttempts++;
+                            if (reconnectAttempts < maxReconnectAttempts) {
+                                const delay = Math.min(baseReconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                                reconnectTimeout = setTimeout(connectWebSocket, delay);
+                            }
+                        };
+                    } catch (error) {
+                        console.error('Error creating Heatmap WebSocket:', error);
+                        reconnectAttempts++;
+                        if (reconnectAttempts < maxReconnectAttempts) {
+                            const delay = Math.min(baseReconnectDelay * Math.pow(1.5, reconnectAttempts), maxReconnectDelay);
+                            reconnectTimeout = setTimeout(connectWebSocket, delay);
+                        }
+                    }
+                };
+
+                connectWebSocket();
+
+                await cacheEntryRemoved;
+                if (ws !== null && ws !== undefined) {
+                    try {
+                        (ws as WebSocket).close();
+                    } catch (e) {
+                        // Ignore
+                    }
+                }
+                if (reconnectTimeout) {
+                    clearTimeout(reconnectTimeout);
+                }
+            },
+            keepUnusedDataFor: 0,
+        }),
     }),
 });
 
@@ -528,6 +723,12 @@ export const {
     useClosePositionMutation,
     useRunBacktestMutation,
     useStreamGreeksQuery,
-    useStreamPCRQuery
+    useStreamPCRQuery,
+    useGetNifty50HeatmapQuery,
+    useStreamNifty50HeatmapQuery,
+    useToggleIntelligenceModuleMutation,
+    useGetPortfolioStatsQuery,
+    useGetTradeHistoryQuery,
+    useResetPortfolioMutation,
 } = apiSlice;
 

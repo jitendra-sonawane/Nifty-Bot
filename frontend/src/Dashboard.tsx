@@ -1,286 +1,299 @@
-import React, { useState, useEffect, useRef } from 'react';
-import PositionCards from './PositionCards';
-import BacktestPanel from './BacktestPanel';
-import PriceChart from './PriceChart';
-import IndicatorPanel from './IndicatorPanel';
-import SupportResistance from './SupportResistance';
-import GreeksPanel from './GreeksPanel';
-import ReasoningCard from './ReasoningCard';
-import FilterStatusPanel from './FilterStatusPanel';
-import SentimentPanel from './SentimentPanel';
-import PCRSentimentCard from './components/PCRSentimentCard';
-import { useGetStatusQuery, useStreamGreeksQuery, useStartBotMutation, useStopBotMutation, useSetTradingModeMutation, useAddPaperFundsMutation, useClosePositionMutation } from './apiSlice';
-import { Activity } from 'lucide-react';
+import React, { useState, useMemo } from 'react';
+import { useDashboard } from './hooks/useDashboard';
+import { useStreamNifty50HeatmapQuery } from './apiSlice';
 
-// New Components
-import Header from './components/dashboard/Header';
-import MetricsGrid from './components/dashboard/MetricsGrid';
-import ControlPanel from './components/dashboard/ControlPanel';
-import LogViewer from './components/dashboard/LogViewer';
-import DashboardLayout from './components/layout/DashboardLayout';
-import Column from './components/layout/Column';
+// Layout
+import Shell from './layout/Shell';
+import Topbar from './layout/Topbar';
+import MarketOverviewBar from './layout/MarketOverviewBar';
+import BottomTabs from './layout/BottomTabs';
+
+// Market
+import PriceChart from './features/market/PriceChart';
+import NiftyHeatmap from './features/market/NiftyHeatmap';
+import IndicatorStrip from './features/market/IndicatorStrip';
+
+// Decision Panel
+import BotControls from './features/controls/BotControls';
+import SignalCard from './features/signals/SignalCard';
+import FilterMatrix from './features/signals/FilterMatrix';
+
+import Skeleton from './shared/Skeleton';
+
+const MAX_LOADING_SKELETON_MS = 4000;
 
 const Dashboard: React.FC = () => {
-    const { data: status, isLoading, refetch } = useGetStatusQuery();
+    const {
+        status,
+        isLoading,
+        isError,
+        isAuthenticated,
+        tokenStatus,
+        currentPrice,
+        isRunning,
+        strategyData,
+        signal,
+        priceHistory,
+        mergedGreeksData,
+        time,
+        isModalOpen,
+        pendingMode,
+        startBot,
+        stopBot,
+        handleModeToggle,
+        confirmSwitch,
+        cancelSwitch,
+        handleAddFunds,
+        closePosition,
+        intelligence,
+        toggleIntelligenceModule,
+    } = useDashboard();
 
-    // Real-time Greeks WebSocket stream
-    const { data: greeksStreamData } = useStreamGreeksQuery();
-
-    // Merge WebSocket stream data with HTTP data (prefer WebSocket for real-time updates)
-    const [mergedGreeksData, setMergedGreeksData] = useState<any>(null);
-
-    // Check if authenticated
-    const isAuthenticated = status?.auth?.authenticated;
-    const tokenStatus = status?.auth?.token_status;
-
-    useEffect(() => {
-        // Check WebSocket data first
-        if (greeksStreamData?.data) {
-            const wsData = greeksStreamData.data;
-            if (wsData.ce && wsData.pe) {
-                setMergedGreeksData(wsData);
-            }
+    const [skeletonExpired, setSkeletonExpired] = useState(false);
+    React.useEffect(() => {
+        if (isLoading && !status) {
+            const t = setTimeout(() => setSkeletonExpired(true), MAX_LOADING_SKELETON_MS);
+            return () => clearTimeout(t);
         }
-        // Prioritize market_state.greeks (real-time)
-        else if (status?.market_state?.greeks) {
-            setMergedGreeksData(status.market_state.greeks);
-        }
-        // Fallback to strategy_data.greeks
-        else if (status?.strategy_data?.greeks) {
-            setMergedGreeksData(status.strategy_data.greeks);
-        }
-    }, [greeksStreamData, status?.market_state?.greeks, status?.strategy_data?.greeks]);
+        if (status) setSkeletonExpired(false);
+    }, [isLoading, status]);
 
-    useEffect(() => {
-        const handler = (event: MessageEvent) => {
-            if (event.data === 'auth_success') {
-                console.log('✅✅✅ Auth success message received!');
-                setTimeout(() => refetch(), 2000);
-                setTimeout(() => refetch(), 4000);
-                setTimeout(() => refetch(), 6000);
-            }
-        };
-        window.addEventListener('message', handler);
-        return () => window.removeEventListener('message', handler);
-    }, [refetch]);
+    const showSkeleton = isLoading && !skeletonExpired && !status;
+    const backendUnavailable = (!status && (isError || skeletonExpired)) || isError;
 
-    const [startBot] = useStartBotMutation();
-    const [stopBot] = useStopBotMutation();
-    const [setTradingMode] = useSetTradingModeMutation();
-    const [addPaperFunds] = useAddPaperFundsMutation();
-    const [closePosition] = useClosePositionMutation();
+    // Chart view toggle
+    const [chartView, setChartView] = useState<'chart' | 'heatmap'>('chart');
+    const { data: heatmapData, isLoading: heatmapLoading } = useStreamNifty50HeatmapQuery(undefined, {
+        skip: chartView !== 'heatmap',
+    });
 
-    const [isModalOpen, setIsModalOpen] = useState(false);
-    const [pendingMode, setPendingMode] = useState<string | null>(null);
-    const [activeTab, setActiveTab] = useState<'logs' | 'history'>('logs');
+    // Derived data for passing to children
+    const reasoning = status?.reasoning;
+    const pcrAnalysis = status?.market_state?.pcr_analysis;
+    const sentiment = status?.market_state?.sentiment || status?.sentiment;
+    const openPositionCount = (status as any)?.positions?.length ?? 0;
 
-    const handleModeToggle = () => {
-        const newMode = status?.trading_mode === 'REAL' ? 'PAPER' : 'REAL';
-        setPendingMode(newMode);
-        setIsModalOpen(true);
-    };
+    // Memoize BottomTabs props to avoid unnecessary re-renders
+    const bottomTabsProps = useMemo(() => ({
+        status,
+        greeks: mergedGreeksData,
+        supportResistance: strategyData?.support_resistance,
+        breakout: strategyData?.breakout,
+        pcrAnalysis,
+        sentiment,
+        intelligence,
+        filters: strategyData?.filters,
+        reasoning,
+        signal,
+        strategyData,
+        pcr: status?.market_state?.pcr,
+        openPositionCount,
+    }), [status, mergedGreeksData, strategyData, pcrAnalysis, sentiment, intelligence, reasoning, signal, openPositionCount]);
 
-    const confirmSwitch = () => {
-        if (pendingMode) {
-            setTradingMode({ mode: pendingMode });
-        }
-        setIsModalOpen(false);
-        setPendingMode(null);
-    };
-
-    const cancelSwitch = () => {
-        setIsModalOpen(false);
-        setPendingMode(null);
-    };
-
-    const handleAddFunds = () => {
-        const amount = prompt("Enter amount to add to Paper Funds:", "100000");
-        if (amount && !isNaN(parseFloat(amount))) {
-            addPaperFunds({ amount: parseFloat(amount) });
-        }
-    };
-
-    // Real Data Integration
-    const currentPrice = status?.current_price || 0;
-    const isRunning = status?.is_running;
-    const strategyData = status?.strategy_data || {};
-    const signal = status?.latest_signal || 'WAITING';
-
-    // Price History for Chart
-    const [priceHistory, setPriceHistory] = useState<{ time: string, price: number }[]>([]);
-    const lastPriceRef = useRef(0);
-
-    useEffect(() => {
-        if (currentPrice && currentPrice !== lastPriceRef.current) {
-            const now = new Date();
-            const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-
-            setPriceHistory(prev => {
-                const newHistory = [...prev, { time: timeStr, price: currentPrice }];
-                return newHistory.slice(-50); // Keep last 50 points for chart
-            });
-            lastPriceRef.current = currentPrice;
-        }
-    }, [currentPrice]);
-
-    // Time formatting
-    const [time, setTime] = useState(new Date());
-    useEffect(() => {
-        const timer = setInterval(() => setTime(new Date()), 1000);
-        return () => clearInterval(timer);
-    }, []);
-
-    if (isLoading) return <div className="min-h-screen bg-[#0B0E14] flex items-center justify-center text-white">Loading...</div>;
+    if (showSkeleton) {
+        return (
+            <Shell
+                topbar={
+                    <div className="max-w-[var(--max-content)] mx-auto px-4 h-[var(--topbar-height)] flex items-center">
+                        <Skeleton className="w-32" />
+                    </div>
+                }
+            >
+                {/* Skeleton matching new layout */}
+                <div className="h-10 mb-3 rounded-lg overflow-hidden">
+                    <Skeleton lines={1} />
+                </div>
+                <div className="grid gap-3 lg:grid-cols-[1fr_var(--decision-panel-width)] mb-3">
+                    <Skeleton lines={8} />
+                    <Skeleton lines={5} />
+                </div>
+                <Skeleton lines={6} />
+            </Shell>
+        );
+    }
 
     return (
-        <DashboardLayout>
-            {/* Modal Overlay */}
+        <Shell
+            topbar={
+                <Topbar
+                    currentPrice={currentPrice}
+                    priceHistory={priceHistory}
+                    status={status}
+                    isAuthenticated={isAuthenticated}
+                    tokenStatus={tokenStatus}
+                    time={time}
+                    handleModeToggle={handleModeToggle}
+                    handleAddFunds={handleAddFunds}
+                />
+            }
+            marketBar={
+                <MarketOverviewBar
+                    strategyData={strategyData}
+                    currentPrice={currentPrice}
+                    pcrAnalysis={pcrAnalysis}
+                    sentiment={sentiment}
+                    isRunning={isRunning}
+                />
+            }
+        >
+            {/* ── Error Banners ── */}
+            {backendUnavailable && (
+                <div className="mb-3 p-3 rounded-lg bg-amber-500/15 border border-amber-500/40 text-amber-200 text-sm flex items-center justify-between gap-2">
+                    <span>Backend not connected. Start the backend (e.g. <code className="bg-black/20 px-1 rounded">python server.py</code>) on port 8000.</span>
+                    <button onClick={() => window.location.reload()} className="px-2 py-1 rounded bg-amber-500/30 hover:bg-amber-500/50 text-xs font-medium">Retry</button>
+                </div>
+            )}
+            {status && (status as any).token_valid === false && (
+                <div className="mb-3 p-3 rounded-lg bg-red-500/15 border border-red-500/40 text-red-200 text-sm flex items-center justify-between gap-2">
+                    <span>🔑 <strong>Upstox token expired.</strong> Market data is unavailable — please re-authenticate to resume live feeds.</span>
+                    <a href="http://localhost:8000/auth/login" target="_blank" rel="noopener noreferrer"
+                        className="px-2 py-1 rounded bg-red-500/30 hover:bg-red-500/50 text-xs font-medium whitespace-nowrap">
+                        Re-Login
+                    </a>
+                </div>
+            )}
+
+            {/* ═══ MAIN 2-COLUMN LAYOUT (65% chart / 35% decision) ═══ */}
+            <div className="grid gap-3 lg:grid-cols-[1fr_var(--decision-panel-width)]">
+
+                {/* ─── LEFT: Chart + Indicator Strip ─── */}
+                <div className="space-y-3 min-w-0">
+                    {/* Chart / Heatmap Toggle */}
+                    <div className="surface-elevated rounded-xl overflow-hidden">
+                        <div style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '8px 12px',
+                            borderBottom: '1px solid var(--border-subtle)',
+                        }}>
+                            <span style={{
+                                fontSize: 'var(--text-sm)',
+                                fontWeight: 600,
+                                color: 'var(--text-secondary)',
+                                textTransform: 'uppercase' as const,
+                                letterSpacing: '0.05em',
+                            }}>
+                                {chartView === 'chart' ? 'Nifty 50 Price' : 'Nifty 50 Heatmap'}
+                            </span>
+                            <div style={{
+                                display: 'flex',
+                                gap: '2px',
+                                background: 'var(--bg-overlay)',
+                                borderRadius: 'var(--radius-sm)',
+                                padding: '2px',
+                            }}>
+                                <button
+                                    onClick={() => setChartView('chart')}
+                                    style={{
+                                        fontSize: '11px',
+                                        fontWeight: 500,
+                                        padding: '4px 10px',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer',
+                                        color: chartView === 'chart' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                                        background: chartView === 'chart' ? 'var(--bg-elevated)' : 'transparent',
+                                        boxShadow: chartView === 'chart' ? 'var(--shadow-sm)' : 'none',
+                                        transition: 'all 0.15s',
+                                    }}
+                                >
+                                    Chart
+                                </button>
+                                <button
+                                    onClick={() => setChartView('heatmap')}
+                                    style={{
+                                        fontSize: '11px',
+                                        fontWeight: 500,
+                                        padding: '4px 10px',
+                                        border: 'none',
+                                        borderRadius: '4px',
+                                        cursor: 'pointer',
+                                        color: chartView === 'heatmap' ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                                        background: chartView === 'heatmap' ? 'var(--bg-elevated)' : 'transparent',
+                                        boxShadow: chartView === 'heatmap' ? 'var(--shadow-sm)' : 'none',
+                                        transition: 'all 0.15s',
+                                    }}
+                                >
+                                    Heatmap
+                                </button>
+                            </div>
+                        </div>
+                        {chartView === 'chart' ? (
+                            <PriceChart data={priceHistory} height={340} />
+                        ) : (
+                            <NiftyHeatmap
+                                data={heatmapData?.stocks}
+                                isLoading={heatmapLoading}
+                                height={340}
+                            />
+                        )}
+                    </div>
+
+                    {/* Indicator Strip */}
+                    <IndicatorStrip strategyData={strategyData} currentPrice={currentPrice} />
+                </div>
+
+                {/* ─── RIGHT: Decision Panel ─── */}
+                <div className="space-y-3 flex-shrink-0">
+                    <BotControls
+                        isAuthenticated={isAuthenticated}
+                        isRunning={isRunning}
+                        startBot={startBot}
+                        stopBot={stopBot}
+                    />
+                    <SignalCard signal={signal} reasoning={reasoning} strategyData={strategyData} />
+                    <FilterMatrix filters={strategyData?.filters} />
+                </div>
+            </div>
+
+            {/* ═══ BOTTOM TABS (full width) ═══ */}
+            <BottomTabs
+                {...bottomTabsProps}
+                closePosition={closePosition}
+                toggleIntelligenceModule={toggleIntelligenceModule}
+                currentPrice={currentPrice}
+            />
+
+            {/* ═══ MODE SWITCH MODAL ═══ */}
             {isModalOpen && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-                    <div className="bg-[#161b2e] border border-white/10 rounded-2xl p-6 max-w-md w-full shadow-2xl">
-                        <h3 className={`text-xl font-bold mb-4 ${pendingMode === 'REAL' ? 'text-red-400' : 'text-blue-400'}`}>
-                            {pendingMode === 'REAL' ? '⚠️ Switch to Real Money?' : 'ℹ️ Switch to Paper Trading?'}
-                        </h3>
-                        <p className="text-gray-300 mb-6">
-                            {pendingMode === 'REAL'
-                                ? "You are about to enable REAL MONEY trading. Trades will be executed on your Upstox account with actual funds. Are you sure?"
-                                : "You are switching to Paper Trading. No real money will be used."}
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+                    <div className="surface-elevated max-w-sm w-full mx-4 p-6 animate-slide-up">
+                        <h3 className="text-lg font-bold mb-2">Switch Trading Mode</h3>
+                        <p className="text-sm text-[var(--text-secondary)] mb-4">
+                            {pendingMode === 'REAL' ? (
+                                <>
+                                    ⚠️ You are switching to <strong className="text-[var(--color-loss-text)]">REAL TRADING</strong>.
+                                    This will use actual funds and execute live trades.
+                                </>
+                            ) : (
+                                <>
+                                    You are switching to <strong className="text-[var(--accent-blue)]">PAPER TRADING</strong>.
+                                    No real funds will be used.
+                                </>
+                            )}
                         </p>
-                        <div className="flex gap-3 justify-end">
-                            <button onClick={cancelSwitch} className="px-4 py-2 rounded-lg bg-gray-700 hover:bg-gray-600 text-white font-medium">Cancel</button>
-                            <button onClick={confirmSwitch} className={`px-4 py-2 rounded-lg font-bold text-white ${pendingMode === 'REAL' ? 'bg-red-500 hover:bg-red-600' : 'bg-blue-500 hover:bg-blue-600'}`}>Confirm Switch</button>
+                        <div className="flex gap-2">
+                            <button
+                                onClick={cancelSwitch}
+                                className="flex-1 py-2 rounded-lg text-sm font-medium bg-[var(--bg-overlay)] hover:bg-[var(--bg-hover)] transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmSwitch}
+                                className={`flex-1 py-2 rounded-lg text-sm font-bold text-white transition-opacity hover:opacity-90 ${pendingMode === 'REAL'
+                                    ? 'bg-gradient-to-r from-[var(--color-loss)] to-orange-500'
+                                    : 'bg-gradient-to-r from-[var(--accent-blue)] to-[var(--accent-indigo)]'
+                                    }`}
+                            >
+                                Confirm
+                            </button>
                         </div>
                     </div>
                 </div>
             )}
-
-            {/* HEADER */}
-            <Header
-                status={status}
-                isAuthenticated={isAuthenticated || false}
-                tokenStatus={tokenStatus || ''}
-                time={time}
-                handleModeToggle={handleModeToggle}
-                handleAddFunds={handleAddFunds}
-            />
-
-            {/* KEY METRICS */}
-            <MetricsGrid
-                currentPrice={currentPrice}
-                priceHistory={priceHistory}
-                signal={signal}
-                status={status}
-            />
-
-            {/* MAIN 3-COLUMN GRID */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
-
-                {/* COLUMN 1: MARKET CONTEXT (40%) */}
-                <Column className="lg:col-span-5">
-                    {/* Main Chart Area */}
-                    <div className="card p-4 rounded-xl bg-[#151925] border border-white/5 shadow-lg h-[350px] flex flex-col">
-                        <div className="flex justify-between items-center mb-4">
-                            <h2 className="text-sm font-medium text-white flex items-center gap-2">
-                                <Activity size={16} className="text-cyan-400" /> Price Action
-                            </h2>
-                            <div className="flex gap-2">
-                                {['1m', '5m', '15m'].map(tf => (
-                                    <button key={tf} className="px-2 py-1 text-[10px] rounded bg-white/5 hover:bg-white/10 text-gray-300">{tf}</button>
-                                ))}
-                            </div>
-                        </div>
-                        <div className="flex-1 w-full bg-black/20 rounded-lg overflow-hidden relative">
-                            <PriceChart data={priceHistory} height={280} />
-                        </div>
-                    </div>
-
-                    {/* Indicator Grid */}
-                    <IndicatorPanel strategyData={strategyData} currentPrice={currentPrice} />
-
-                    {/* PCR Sentiment Card */}
-                    <PCRSentimentCard
-                        pcrAnalysis={status?.pcr_analysis || status?.market_state?.pcr_analysis}
-                        sentiment={status?.sentiment}
-                    />
-
-                    {/* Support/Resistance */}
-                    <div className="card p-4 rounded-xl bg-[#151925] border border-white/5 shadow-lg max-h-[400px] overflow-y-auto">
-                        <h2 className="text-sm font-medium mb-3 text-white">Support & Resistance</h2>
-                        <SupportResistance
-                            supportResistance={strategyData?.support_resistance}
-                            breakout={strategyData?.breakout}
-                            currentPrice={currentPrice}
-                        />
-                    </div>
-                </Column>
-
-                {/* COLUMN 2: BOT INTELLIGENCE (30%) */}
-                <Column className="lg:col-span-4">
-                    {/* Market Sentiment */}
-                    <SentimentPanel status={status} />
-
-                    {/* Trading Reasoning */}
-                    <div className="card rounded-xl bg-[#151925] border border-white/5 shadow-lg overflow-hidden">
-                        <div className="p-4 overflow-y-auto max-h-[300px]">
-                            <ReasoningCard
-                                reasoning={status?.reasoning}
-                                currentPrice={currentPrice}
-                            />
-                        </div>
-                    </div>
-
-                    {/* Live Filter Metrics */}
-                    <div className="card rounded-xl bg-[#151925] border border-white/5 shadow-lg overflow-hidden">
-                        <div className="p-4 overflow-y-auto max-h-[300px]">
-                            <FilterStatusPanel
-                                filters={strategyData?.filters}
-                                rsi={strategyData?.rsi}
-                                volumeRatio={strategyData?.volume_ratio}
-                                atrPct={strategyData?.atr_pct}
-                                vwap={strategyData?.vwap}
-                                currentPrice={currentPrice}
-                                supertrend={strategyData?.supertrend}
-                                ema5={strategyData?.ema_5}
-                                ema20={strategyData?.ema_20}
-                            />
-                        </div>
-                    </div>
-
-                    {/* Logs (Compact) */}
-                    <div className="card rounded-xl bg-[#151925] border border-white/5 shadow-lg overflow-hidden h-[300px]">
-                        <LogViewer
-                            status={status}
-                            activeTab={activeTab}
-                            setActiveTab={setActiveTab}
-                        />
-                    </div>
-                </Column>
-
-                {/* COLUMN 3: EXECUTION & CONTROL (30%) */}
-                <Column className="lg:col-span-3">
-                    {/* Controls */}
-                    <ControlPanel
-                        isAuthenticated={isAuthenticated || false}
-                        isRunning={isRunning || false}
-                        startBot={startBot}
-                        stopBot={stopBot}
-                    />
-
-                    {/* Open Positions */}
-                    <PositionCards status={status} closePosition={closePosition} />
-
-                    {/* Greeks Panel */}
-                    <div className="card rounded-xl bg-[#151925] border border-white/5 shadow-lg overflow-hidden">
-                        <div className="p-4 overflow-y-auto max-h-[400px]">
-                            <GreeksPanel greeks={mergedGreeksData || strategyData?.greeks} />
-                        </div>
-                    </div>
-                </Column>
-            </div>
-
-            {/* BOTTOM: BACKTEST */}
-            <BacktestPanel />
-        </DashboardLayout>
+        </Shell>
     );
 };
 

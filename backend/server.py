@@ -79,7 +79,9 @@ async def startup_event():
         async def status_callback_handler(status):
             """Async wrapper for status broadcasts"""
             try:
-                await manager.broadcast(status)
+                # Ensure all numpy types are converted to native Python types before serialization
+                clean_status = convert_numpy_types(status)
+                await manager.broadcast(clean_status)
             except Exception as e:
                 logger.error(f"Error broadcasting status: {e}")
         
@@ -142,6 +144,9 @@ def get_status():
                 exp_time = decoded.get('exp', 0)
                 remaining = exp_time - current_time
                 
+                logger.info(f"🔍 DEBUG: Token Validation - Current Time: {current_time}, Exp Time: {exp_time}, Remaining: {remaining}")
+                logger.info(f"🔍 DEBUG: Token Snippet: {fresh_token[:20]}...{fresh_token[-20:]}")
+                
                 if remaining > 0:
                     token_status = {
                         "is_valid": True,
@@ -178,12 +183,19 @@ def get_status():
             "error_message": "No access token found"
         }
     
+    # Combined authentication status
+    data_fetcher_valid = getattr(bot.data_fetcher, "token_valid", "N/A") if bot.data_fetcher else "NoFetcher"
+    
+    # We are authenticated ONLY if the token is valid (time-wise) AND the API accepts it
+    is_authenticated = token_status["is_valid"] and (data_fetcher_valid is True)
+    
     status["auth"] = {
-        "authenticated": token_status["is_valid"],
-        "token_status": token_status
+        "authenticated": is_authenticated,
+        "token_status": token_status,
+        "api_status": data_fetcher_valid
     }
     
-    logger.debug(f"📊 Status endpoint: authenticated={token_status['is_valid']}, token_present={bool(fresh_token)}")
+    logger.debug(f"📊 Status endpoint: authenticated={is_authenticated} (Token: {token_status['is_valid']}, API: {data_fetcher_valid})")
     return status
 
 @app.post("/start")
@@ -244,21 +256,33 @@ class ClosePositionRequest(BaseModel):
 
 @app.post("/positions/close")
 def close_position(request: ClosePositionRequest):
-    # This needs to be handled by TradeExecutor or PositionManager directly
-    # Bot exposes position_manager for legacy compat
+    paper_mgr = bot.order_manager.paper_manager if (bot.order_manager and bot.order_manager.paper_manager) else None
+
+    # Try multi-leg position first (PaperTradingManager)
+    if paper_mgr and request.position_id in paper_mgr.positions:
+        pos = paper_mgr.positions[request.position_id]
+        # Update each leg's current price to the provided exit price
+        for leg in pos.legs:
+            leg.current_price = request.exit_price
+        trade = paper_mgr.close_position(request.position_id, exit_reason="MANUAL_CLOSE")
+        if trade:
+            return {"message": "Closed", "trade": convert_numpy_types(trade.to_dict())}
+
+    # Fallback: single-leg position (PositionManager)
     if not bot.position_manager:
         raise HTTPException(status_code=400, detail="Manager not initialized")
-    
+
     trade = bot.position_manager.close_position(
         position_id=request.position_id,
         exit_price=request.exit_price,
         reason="MANUAL_CLOSE"
     )
     if trade:
-        # We should also update TradeExecutor history
-        if bot.trade_executor:
-            bot.trade_executor.trade_history.append(trade)
+        # Record into unified paper trading journal
+        if paper_mgr:
+            paper_mgr.record_single_leg_trade(trade)
         return {"message": "Closed", "trade": convert_numpy_types(trade)}
+
     raise HTTPException(status_code=404, detail="Position not found")
 
 # Backtesting
@@ -266,35 +290,241 @@ class BacktestRequest(BaseModel):
     from_date: str
     to_date: str
     initial_capital: float = 100000
+    strategy: str = "iron_condor"
 
 @app.post("/backtest")
 def run_backtest(request: BacktestRequest):
-    # Backtester is synchronous, run in threadpool if needed
-    # For now, keep it sync as it might be CPU intensive
+    """Run backtest for a specific strategy."""
     try:
-        from backtester import Backtester
-        if not bot.data_fetcher:
-             return {"error": "Bot not initialized"}
-        
-        # We need a StrategyEngine instance. 
-        # Bot has strategy_runner which has strategy_engine
-        strategy_engine = bot.strategy_runner.strategy_engine if bot.strategy_runner else None
-        
-        if not strategy_engine:
-             return {"error": "Strategy Engine not ready"}
+        from app.strategies.backtester import StrategyBacktester
+        from app.strategies.iron_condor import IronCondorStrategy
+        from app.strategies.short_straddle import ShortStraddleStrategy
+        from app.strategies.bull_bear_spread import BullCallSpreadStrategy, BearPutSpreadStrategy
+        from app.strategies.breakout_strategy import BreakoutStrategy
 
-        backtester = Backtester(bot.data_fetcher, strategy_engine)
-        result = backtester.run_backtest(
-            symbol='NSE_INDEX|Nifty 50',
+        # Strategy registry
+        strategies = {
+            "iron_condor": IronCondorStrategy,
+            "short_straddle": ShortStraddleStrategy,
+            "bull_call_spread": BullCallSpreadStrategy,
+            "bear_put_spread": BearPutSpreadStrategy,
+            "breakout": BreakoutStrategy,
+        }
+
+        strategy_cls = strategies.get(request.strategy)
+        if not strategy_cls:
+            return {"error": f"Unknown strategy: {request.strategy}. Available: {list(strategies.keys())}"}
+
+        backtester = StrategyBacktester(bot.data_fetcher if bot.data_fetcher else None)
+        result = backtester.run(
+            strategy=strategy_cls(),
             from_date=request.from_date,
             to_date=request.to_date,
             initial_capital=request.initial_capital,
-            interval='1minute'
         )
-        return result
+        return convert_numpy_types(result.to_dict())
     except Exception as e:
-        logger.error(f"Backtest error: {e}")
+        logger.error(f"Backtest error: {e}", exc_info=True)
         return {"error": str(e)}
+
+
+# ─── Strategy Endpoints ────────────────────────────────────────────────────
+
+@app.get("/strategies")
+def list_strategies():
+    """List all available strategies and their configurations."""
+    from app.strategies.iron_condor import IronCondorStrategy
+    from app.strategies.short_straddle import ShortStraddleStrategy
+    from app.strategies.bull_bear_spread import BullCallSpreadStrategy, BearPutSpreadStrategy
+    from app.strategies.breakout_strategy import BreakoutStrategy
+
+    strategies = [
+        IronCondorStrategy(),
+        ShortStraddleStrategy(),
+        BullCallSpreadStrategy(),
+        BearPutSpreadStrategy(),
+        BreakoutStrategy(),
+    ]
+    return {
+        "active_strategy": Config.ACTIVE_STRATEGY,
+        "trading_mode": Config.TRADING_MODE,
+        "strategies": [s.get_info() for s in strategies],
+    }
+
+class SetStrategyRequest(BaseModel):
+    strategy: str
+
+# ─── Intelligence Engine Endpoints ─────────────────────────────────────────
+
+class IntelligenceToggleRequest(BaseModel):
+    module: str
+    enabled: bool
+
+@app.post("/intelligence/toggle")
+def toggle_intelligence_module(request: IntelligenceToggleRequest):
+    """Enable or disable an intelligence module by name."""
+    engine = getattr(bot, "intelligence_engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="Intelligence engine not initialized")
+    if request.module not in engine._modules:
+        valid = list(engine._modules.keys())
+        raise HTTPException(status_code=400, detail=f"Unknown module '{request.module}'. Valid: {valid}")
+    if request.enabled:
+        engine.enable(request.module)
+    else:
+        engine.disable(request.module)
+    return {
+        "module": request.module,
+        "enabled": request.enabled,
+        "modules": {name: mod.enabled for name, mod in engine._modules.items()},
+    }
+
+@app.get("/intelligence/status")
+def get_intelligence_status():
+    """Get current status of all intelligence modules."""
+    engine = getattr(bot, "intelligence_engine", None)
+    if engine is None:
+        return {"modules": {}, "context": {}}
+    return {
+        "modules": {name: mod.enabled for name, mod in engine._modules.items()},
+        "context": engine.get_context(),
+    }
+
+@app.post("/strategies/active")
+def set_active_strategy(request: SetStrategyRequest):
+    """Set the active trading strategy."""
+    valid = ["iron_condor", "short_straddle", "bull_call_spread", "bear_put_spread", "breakout"]
+    if request.strategy not in valid:
+        raise HTTPException(status_code=400, detail=f"Invalid strategy. Choose from: {valid}")
+    Config.ACTIVE_STRATEGY = request.strategy
+    return {"message": f"Active strategy set to {request.strategy}", "active_strategy": Config.ACTIVE_STRATEGY}
+
+
+# ─── Option Chain Endpoints ────────────────────────────────────────────────
+
+@app.get("/option-chain")
+def get_option_chain(spot_price: float = 0):
+    """Get current option chain data."""
+    from app.core.option_chain import OptionChainManager
+
+    chain = OptionChainManager()
+    price = spot_price if spot_price > 0 else 23500  # Default to approximate Nifty
+    chain.update(price, force=True)
+    return convert_numpy_types(chain.get_chain_summary())
+
+
+# ─── Paper Trading / Portfolio Endpoints ───────────────────────────────────
+
+def _get_paper_mgr():
+    """Return the live PaperTradingManager from the bot (single source of truth)."""
+    if bot.order_manager and bot.order_manager.paper_manager:
+        return bot.order_manager.paper_manager
+    # Fallback: load from file if bot not yet initialized
+    from app.managers.paper_trading import PaperTradingManager
+    return PaperTradingManager()
+
+
+@app.get("/portfolio")
+def get_portfolio():
+    """Get paper trading portfolio stats."""
+    return convert_numpy_types(_get_paper_mgr().get_portfolio_stats())
+
+
+@app.get("/portfolio/positions")
+def get_open_positions_portfolio():
+    """Get all open multi-leg positions from PaperTradingManager."""
+    ptm = _get_paper_mgr()
+    # Also include single-leg positions from PositionManager
+    multi_leg = ptm.get_open_positions()
+    single_leg = bot.position_manager.get_positions() if bot.position_manager else []
+    return convert_numpy_types({"positions": multi_leg, "single_leg_positions": single_leg})
+
+
+@app.get("/portfolio/history")
+def get_trade_history(strategy: str = None, limit: int = 100):
+    """Get unified trade history from PaperTradingManager, optionally filtered."""
+    return convert_numpy_types({"trades": _get_paper_mgr().get_trade_history(strategy, limit)})
+
+
+@app.get("/portfolio/stats")
+def get_portfolio_stats():
+    """Get detailed portfolio stats including win rate, P&L breakdown, strategy analytics."""
+    return convert_numpy_types(_get_paper_mgr().get_portfolio_stats())
+
+
+@app.post("/portfolio/reset")
+def reset_portfolio():
+    """Reset paper trading portfolio to initial capital."""
+    ptm = _get_paper_mgr()
+    ptm.reset()
+    return {"message": "Portfolio reset", "stats": convert_numpy_types(ptm.get_portfolio_stats())}
+
+
+# ─── Risk Management Endpoints ────────────────────────────────────────────
+
+@app.get("/risk")
+def get_risk_stats():
+    """Get current risk management stats."""
+    from app.managers.risk_manager import RiskManager
+    rm = RiskManager()
+    return convert_numpy_types(rm.get_stats())
+
+
+# ─── Sandbox Endpoints ────────────────────────────────────────────────────
+
+class SandboxOrderRequest(BaseModel):
+    instrument_token: str
+    quantity: int
+    transaction_type: str  # BUY or SELL
+    order_type: str = "MARKET"
+    price: float = 0.0
+
+@app.post("/sandbox/order")
+def place_sandbox_order(request: SandboxOrderRequest):
+    """Place an order via Upstox Sandbox API."""
+    from app.core.sandbox_executor import SandboxExecutor
+    executor = SandboxExecutor()
+    result = executor.place_order(
+        instrument_token=request.instrument_token,
+        quantity=request.quantity,
+        transaction_type=request.transaction_type,
+        order_type=request.order_type,
+        price=request.price,
+    )
+    if result:
+        return {"status": "success", "order": result}
+    raise HTTPException(status_code=400, detail="Order placement failed")
+
+@app.get("/sandbox/orders")
+def get_sandbox_orders():
+    """Get sandbox order history."""
+    from app.core.sandbox_executor import SandboxExecutor
+    executor = SandboxExecutor()
+    orders = executor.fetch_live_orders()
+    return {"orders": orders or []}
+
+
+# ─── Nifty 50 Heatmap ─────────────────────────────────────────────────────
+
+@app.get("/api/nifty50/heatmap")
+def get_nifty50_heatmap():
+    """Get live Nifty 50 heatmap data from Upstox Full Market Quotes API."""
+    from app.data.nifty50_api import get_nifty50_heatmap_data
+
+    # Use the bot's access token (refreshed via auth flow)
+    access_token = Config.ACCESS_TOKEN
+    if not access_token:
+        # Try fresh from env
+        from dotenv import load_dotenv
+        load_dotenv(override=True)
+        access_token = os.getenv("UPSTOX_ACCESS_TOKEN")
+
+    if not access_token:
+        raise HTTPException(status_code=401, detail="No access token available")
+
+    result = get_nifty50_heatmap_data(access_token)
+    return result
+
 
 # Greeks Data Endpoint
 @app.get("/greeks")
@@ -370,6 +600,43 @@ async def greeks_websocket_endpoint(websocket: WebSocket):
             await websocket.close()
         except:
             pass
+
+# Heatmap WebSocket
+@app.websocket("/ws/heatmap")
+async def heatmap_websocket_endpoint(websocket: WebSocket):
+    try:
+        await websocket.accept()
+        logger.info("Heatmap WebSocket client connected")
+        
+        while True:
+            try:
+                # Send latest Nifty 50 quotes
+                if bot.market_data and bot.market_data.nifty50_quotes:
+                    # Convert dict to list for frontend
+                    stocks_list = list(bot.market_data.nifty50_quotes.values())
+                    
+                    heatmap_data = {
+                        "type": "heatmap_update",
+                        "stocks": convert_numpy_types(stocks_list)
+                    }
+                    await websocket.send_json(heatmap_data)
+                
+                # Send every second (or faster if needed, but 1s is good for heatmap)
+                await asyncio.sleep(1)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error sending Heatmap update: {e}")
+                break
+    except WebSocketDisconnect:
+        logger.info("Heatmap WebSocket client disconnected")
+    except Exception as e:
+        logger.error(f"Heatmap WebSocket error: {e}")
+        try:
+            await websocket.close()
+        except:
+            pass
+
 
 # Auth
 @app.get("/auth/login")

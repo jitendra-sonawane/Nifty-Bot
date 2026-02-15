@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mini React - Sequence Diagram</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.6.1/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        }
+
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2em;
+        }
+
+        .diagram-section {
+            margin-bottom: 50px;
+        }
+
+        .diagram-title {
+            color: #667eea;
+            font-size: 1.3em;
+            font-weight: bold;
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #667eea;
+        }
+
+        .mermaid {
+            display: flex;
+            justify-content: center;
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+        }
+
+        .description {
+            margin-top: 15px;
+            padding: 15px;
+            background: #e8eaf6;
+            border-left: 4px solid #667eea;
+            border-radius: 4px;
+            color: #333;
+            line-height: 1.6;
+        }
+
+        .flow-box {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 8px;
+        }
+
+        .phase {
+            margin-bottom: 20px;
+            padding: 15px;
+            background: white;
+            border-left: 4px solid #764ba2;
+            border-radius: 4px;
+        }
+
+        .phase-title {
+            font-weight: bold;
+            color: #764ba2;
+            margin-bottom: 8px;
+            font-size: 1.1em;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>🎭 Mini React - Sequence Diagrams</h1>
+
+        <!-- Diagram 1: Initial Render -->
+        <div class="diagram-section">
+            <div class="diagram-title">1. Initial Render Phase</div>
+            <div class="mermaid">
+                sequenceDiagram
+                participant User as User/Browser
+                participant Main as render()
+                participant Counter as Counter Component
+                participant Hooks as Hooks (useState/useEffect)
+                participant DOM as commitDOM()
+                participant Effects as runEffects()
+
+                User->>Main: Call render()
+                Main->>Main: Reset hookIndex = 0
+                Main->>Main: Create workInProgressFiber
+                Main->>Counter: Call Counter()
+                Counter->>Hooks: useState(0)
+                activate Hooks
+                Hooks->>Hooks: Create hook {state: 0, queue: []}
+                Hooks->>Hooks: Attach to momoizedState
+                Hooks-->>Counter: [0, setState]
+                deactivate Hooks
+                Counter->>Hooks: useEffect(callback, [])
+                activate Hooks
+                Hooks->>Hooks: Create effect object
+                Hooks->>Hooks: Push to updateQueue
+                Hooks-->>Counter: (void)
+                deactivate Hooks
+                Counter-->>Main: Return VDOM {div, children: [h2, button]}
+                Main->>DOM: commitDOM(vdom)
+                activate DOM
+                DOM->>DOM: Create DOM elements
+                DOM->>DOM: Append to rootDOM
+                DOM-->>Main: Commit complete
+                deactivate DOM
+                Main->>Effects: runEffects()
+                activate Effects
+                Effects->>Effects: Execute effect callbacks
+                Effects->>Effects: Store cleanUp functions
+                Effects-->>Main: Effects complete
+                deactivate Effects
+                Main->>Main: Set currentFiber = workInProgressFiber
+                Main-->>User: Initial render done
+            </div>
+            <div class="description">
+                <strong>What happens:</strong> When the page loads, render() is called, which creates a new fiber for
+                the Counter component. useState initializes the count state to 0, useEffect registers the callback, the
+                virtual DOM is converted to actual DOM elements, and effects are executed. The component displays
+                "Count: 0" with an increment button.
+            </div>
+        </div>
+
+        <!-- Diagram 2: User Click -->
+        <div class="diagram-section">
+            <div class="diagram-title">2. User Clicks Button (setState Triggered)</div>
+            <div class="mermaid">
+                sequenceDiagram
+                participant User as User/Browser
+                participant Button as Button Element
+                participant SetState as setState()
+                participant Queue as Hook Queue
+                participant Schedule as scheduleUpdate()
+                participant Render as render()
+
+                User->>Button: Click increment button
+                Button->>SetState: onClick event fires
+                SetState->>Queue: Push state updater to queue
+                Note over Queue: queue = [(c) => c + 1]
+                SetState->>Schedule: Call scheduleUpdate()
+                Schedule->>Render: Trigger re-render
+                Render->>Render: Reset state for new render
+                Render-->>SetState: Update scheduled
+            </div>
+            <div class="description">
+                <strong>What happens:</strong> When the user clicks the increment button, setState is called with the
+                updater function (c) => c + 1. This pushes the update to the hook's queue and schedules a new render
+                cycle.
+            </div>
+        </div>
+
+        <!-- Diagram 3: Re-render After State Update -->
+        <div class="diagram-section">
+            <div class="diagram-title">3. Re-render After State Update</div>
+            <div class="mermaid">
+                sequenceDiagram
+                participant Main as render()
+                participant Counter as Counter Component
+                participant OldFiber as currentFiber (old)
+                participant Hooks as Hooks (useState)
+                participant Queue as Hook Queue
+                participant DOM as commitDOM()
+
+                Main->>OldFiber: Reference previous fiber
+                Main->>Main: Create new workInProgressFiber
+                Main->>Main: Set alternate = old fiber
+                Main->>Counter: Call Counter() again
+                Counter->>Hooks: useState(0) called again
+                activate Hooks
+                Hooks->>OldFiber: Get oldHook from alternate
+                Hooks->>Hooks: oldHook.state = 0
+                Hooks->>Queue: Access hook.queue
+                Note over Queue: queue = [(c) => c + 1]
+                Queue->>Hooks: Apply all queued updates
+                Hooks->>Hooks: newState = (0)(0 => 0 + 1) = 1
+                Hooks->>Hooks: Clear queue: queue = []
+                Hooks-->>Counter: [1, setState]
+                deactivate Hooks
+                Counter->>Counter: Build new VDOM with count=1
+                Counter-->>Main: Return {h2: "Count: 1", button}
+                Main->>DOM: commitDOM(vdom)
+                activate DOM
+                DOM->>DOM: Update h2 text to "Count: 1"
+                DOM-->>Main: DOM updated
+                deactivate DOM
+                Main->>Main: currentFiber = workInProgressFiber
+            </div>
+            <div class="description">
+                <strong>What happens:</strong> During re-render, useState retrieves the previous hook state from the
+                alternate (old) fiber. It then applies all queued state updates (count goes from 0 to 1). The Counter
+                component receives [1, setState] and returns new VDOM. commitDOM updates only the h2 element text
+                without recreating the entire DOM. Effects run if dependencies changed (in this case they don't, so
+                cleanup/callback won't re-run).
+            </div>
+        </div>
+
+        <!-- Diagram 4: Hook Linking -->
+        <div class="diagram-section">
+            <div class="diagram-title">4. Multiple Hooks - Linked List Management</div>
+            <div class="mermaid">
+                sequenceDiagram
+                participant Component as Counter Component
+                participant Hooks as Hook System
+                participant List as Hooks Linked List
+
+                Component->>Hooks: useState(0) - 1st call
+                Hooks->>List: hookIndex = 0
+                Hooks->>List: Create hook1 {state: 0, next: null}
+                Hooks->>List: momoizedState = hook1
+                Hooks->>List: currentHook = hook1
+                Hooks-->>Component: [0, setState]
+
+                Component->>Hooks: useEffect(callback, []) - 2nd hook
+                Hooks->>List: hookIndex = 1
+                Hooks->>List: Create hook2 {state: initialValue, next: null}
+                Hooks->>List: hook1.next = hook2
+                Hooks->>List: currentHook = hook2
+                Hooks-->>Component: (void)
+
+                Note over List: Linked List Structure:<br />momoizedState -> hook1 -> hook2 -> null<br />Each hook
+                maintains its own state
+            </div>
+            <div class="description">
+                <strong>What happens:</strong> Hooks are stored as a linked list on the fiber's momoizedState. Each hook
+                call increments hookIndex and creates a new hook node. The first hook (hookIndex=0) is assigned to
+                momoizedState, while subsequent hooks are linked via the next pointer. This preserves hook order and
+                state across renders.
+            </div>
+        </div>
+
+        <!-- Flow Summary -->
+        <div class="flow-box">
+            <h2 style="color: #667eea; margin-top: 0;">Complete Execution Flow Summary</h2>
+
+            <div class="phase">
+                <div class="phase-title">Phase 1: Render Phase</div>
+                <p>✓ Reset hook tracking (hookIndex = 0)<br>
+                    ✓ Create new fiber with alternate reference to old fiber<br>
+                    ✓ Execute component function (Counter)<br>
+                    ✓ Collect all hooks into linked list<br>
+                    ✓ Generate Virtual DOM</p>
+            </div>
+
+            <div class="phase">
+                <div class="phase-title">Phase 2: Reconciliation</div>
+                <p>✓ Apply queued state updates from previous renders<br>
+                    ✓ Determine which parts of DOM need updating<br>
+                    ✓ Compare new VDOM with previous</p>
+            </div>
+
+            <div class="phase">
+                <div class="phase-title">Phase 3: Commit Phase (commitDOM)</div>
+                <p>✓ First render: Create all DOM elements and append to root<br>
+                    ✓ Subsequent renders: Update only changed elements<br>
+                    ✓ Attach event listeners (onClick)</p>
+            </div>
+
+            <div class="phase">
+                <div class="phase-title">Phase 4: Effect Phase (runEffects)</div>
+                <p>✓ Check if dependencies changed<br>
+                    ✓ Execute cleanup functions from previous effects<br>
+                    ✓ Execute new effect callbacks<br>
+                    ✓ Store cleanup functions for next render</p>
+            </div>
+
+            <div class="phase">
+                <div class="phase-title">Phase 5: Update currentFiber</div>
+                <p>✓ Set currentFiber = workInProgressFiber<br>
+                    ✓ The new fiber becomes the baseline for next render cycle</p>
+            </div>
+        </div>
+
+        <!-- Data Structure -->
+        <div class="flow-box">
+            <h2 style="color: #667eea; margin-top: 0;">Key Data Structures</h2>
+
+            <div class="phase">
+                <div class="phase-title">Fiber Object</div>
+                <pre style="background: #f0f0f0; padding: 12px; border-radius: 4px; overflow-x: auto;">
+{
+  type: function,           // Counter component function
+  momoizedState: hook,      // Linked list of hooks
+  updateQueue: [],          // Effects to run
+  alternate: oldFiber,      // Previous render's fiber
+  dom: DOMElement           // Reference to actual DOM
+}</pre>
+            </div>
+
+            <div class="phase">
+                <div class="phase-title">Hook Object</div>
+                <pre style="background: #f0f0f0; padding: 12px; border-radius: 4px; overflow-x: auto;">
+{
+  state: any,               // Current state value
+  queue: [],                // Pending state updates
+  next: hook | null         // Next hook in linked list
+}</pre>
+            </div>
+
+            <div class="phase">
+                <div class="phase-title">Effect Object</div>
+                <pre style="background: #f0f0f0; padding: 12px; border-radius: 4px; overflow-x: auto;">
+{
+  callback: () => void,     // Effect function to run
+  deps: any[],              // Dependency array
+  cleanUp: (() => void) | null,  // Cleanup function
+  hasChanged: boolean       // Whether to re-run effect
+}</pre>
+            </div>
+        </div>
+    </div>
+</body>
+
+</html>
