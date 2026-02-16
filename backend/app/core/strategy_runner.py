@@ -71,17 +71,24 @@ class StrategyRunner:
                 loop = asyncio.get_running_loop()
                 return await loop.run_in_executor(None, self._run_strategy, current_price, market_state)
         except Exception as e:
-            logger.error(f"Error running strategy: {e}")
+            logger.error(f"Error running strategy: {e}", exc_info=True)
             return None
 
     def _run_strategy(self, current_price: float, market_state: Dict, dry_run: bool = False):
         if not self.is_initialized:
             self._initialize_data()
             if not self.is_initialized:
+                logger.warning("⚠️ _run_strategy: initialization failed, returning None")
                 return None
 
         # 1. Update Candle
-        is_new_candle, df = self.candle_manager.update(current_price, volume=0)
+        try:
+            is_new_candle, df = self.candle_manager.update(current_price, volume=0)
+        except Exception as e:
+            logger.error(f"CandleManager.update CRASHED: {e}", exc_info=True)
+            return None
+
+        logger.debug(f"📊 _run_strategy: df has {len(df)} rows, dry_run={dry_run}, price={current_price}")
         
         if is_new_candle:
             self.ema_5.on_candle_close()
@@ -112,50 +119,52 @@ class StrategyRunner:
             pcr = market_state.get('pcr')
             greeks = market_state.get('greeks')
 
-            # Ensure Greeks are present for live execution
+            # Log missing greeks but do NOT block strategy — base technical
+            # filters (EMA, RSI, ATR, Supertrend) and intelligence filters must
+            # still update so the frontend stays alive.  Signal emission is
+            # gated later: target_contract stays None when greeks are absent,
+            # which prevents actual trade execution.
             if not dry_run and not greeks:
-                logger.warning(f"⚠️ Greeks data missing in market_state. Skipping strategy run.")
-                return None
+                logger.info(f"⚠️ Greeks data missing — strategy will run for indicators/filters but signals are suppressed.")
 
             # Feed DataFrame to intelligence engine (MarketRegime needs it)
             intelligence_context = None
             if self.intelligence_engine and not dry_run:
-                self.intelligence_engine.update({
-                    "df":     df,
-                    "greeks": greeks,
-                    "iv":     (greeks.get("ce", {}).get("iv") if greeks else None),
-                    "expiry": (greeks.get("expiry_date") if greeks else None),
-                })
-                intelligence_context = self.intelligence_engine.get_context()
+                try:
+                    self.intelligence_engine.update({
+                        "df":     df,
+                        "greeks": greeks,
+                        "iv":     (greeks.get("ce", {}).get("iv") if greeks else None),
+                        "expiry": (greeks.get("expiry_date") if greeks else None),
+                    })
+                    intelligence_context = self.intelligence_engine.get_context()
+                except Exception as e:
+                    logger.error(f"Intelligence engine error (non-fatal): {e}", exc_info=True)
 
             vix = market_state.get('vix')
-            pcr_trend = market_state.get('pcr_trend')
+            # pcr_trend lives inside sentiment dict, not at top level
+            sentiment = market_state.get('sentiment') or {}
+            pcr_trend = sentiment.get('pcr_trend')
 
             # Build PDH/PDL/PDC dict
             pdh_pdl_pdc = None
             if self.pdh is not None:
                 pdh_pdl_pdc = {"pdh": self.pdh, "pdl": self.pdl, "pdc": self.pdc}
 
-            result = self.strategy_engine.check_signal(
-                df,
-                pcr=pcr,
-                greeks=greeks,
-                intelligence_context=intelligence_context,
-                vix=vix,
-                pcr_trend=pcr_trend,
-                current_time=datetime.datetime.now(),
-                pdh_pdl_pdc=pdh_pdl_pdc,
-            )
-            
-            # DEBUG: Log what check_signal returned
-            logger.info(f"🐛 DEBUG: check_signal result type: {type(result)}")
-            if isinstance(result, dict):
-                logger.info(f"🐛 DEBUG: Result keys: {result.keys()}")
-                logger.info(f"🐛 DEBUG: Signal: {result.get('signal')}")
-                logger.info(f"🐛 DEBUG: RSI: {result.get('rsi')}")
-                logger.info(f"🐛 DEBUG: EMA 5: {result.get('ema_5')}")
-                logger.info(f"🐛 DEBUG: EMA 20: {result.get('ema_20')}")
-                logger.info(f"🐛 DEBUG: Filters: {result.get('filters')}")
+            try:
+                result = self.strategy_engine.check_signal(
+                    df,
+                    pcr=pcr,
+                    greeks=greeks,
+                    intelligence_context=intelligence_context,
+                    vix=vix,
+                    pcr_trend=pcr_trend,
+                    current_time=datetime.datetime.now(),
+                    pdh_pdl_pdc=pdh_pdl_pdc,
+                )
+            except Exception as e:
+                logger.error(f"check_signal CRASHED: {e}", exc_info=True)
+                result = None
             
             if isinstance(result, dict):
                 signal = result.get('signal', 'HOLD')
@@ -202,50 +211,58 @@ class StrategyRunner:
                 
                 # Check Cooldown and Emit
                 if signal in ["BUY_CE", "BUY_PE"]:
-                    current_time = datetime.datetime.now().timestamp()
-                    last_time = self.last_signal_time.get(signal, 0)
-                    diff = current_time - last_time
-                    cooldown_ok = diff >= self.signal_cooldown_seconds
-                    if not dry_run:
-                        logger.info(f"🧐 Cooldown Check: Signal={signal}, Diff={diff:.2f}s, Cooldown={self.signal_cooldown_seconds}s")
-                    
-                    # If dry_run, we just return the result for validation, don't update cooldown
-                    if dry_run:
-                        return result
-
-                    if cooldown_ok:
-                        self.last_signal_time[signal] = current_time
-                        logger.info(f"🚀 SIGNAL GENERATED: {signal} @ {current_price} | Contract: {self.target_contract}")
-                        
-                        # Extract specific indicators for signal_data
-                        rsi = result.get('rsi')
-                        supertrend = result.get('supertrend')
-
-                        signal_data = {
-                            "signal": signal,
-                            "price": current_price,
-                            "timestamp": datetime.datetime.now().isoformat(),
-                            "reasoning": self.latest_reasoning,
-                            "target_contract": self.target_contract,
-                            "expiry": greeks.get('expiry_date') if greeks else None,
-                            "strike": greeks.get('atm_strike') if greeks else None,
-                            "greeks": greeks,
-                            "market_data": market_state,
-                            "indicators": {
-                                "rsi": rsi,
-                                "supertrend": supertrend,
-                                "ema_5": cur_ema_5,
-                                "ema_20": cur_ema_20,
-                            }
-                        }
-                        return signal_data
+                    # Suppress signal emission when greeks are absent (no target contract)
+                    if not dry_run and not greeks:
+                        logger.warning(f"🚫 Signal {signal} suppressed: greeks missing, cannot determine target contract.")
                     else:
-                        logger.info(f"⏳ Signal '{signal}' suppressed by cooldown. {self.signal_cooldown_seconds - diff:.2f}s remaining.")
+                        current_time_ts = datetime.datetime.now().timestamp()
+                        last_time = self.last_signal_time.get(signal, 0)
+                        diff = current_time_ts - last_time
+                        cooldown_ok = diff >= self.signal_cooldown_seconds
+                        if not dry_run:
+                            logger.info(f"🧐 Cooldown Check: Signal={signal}, Diff={diff:.2f}s, Cooldown={self.signal_cooldown_seconds}s")
+
+                        # If dry_run, we just return the result for validation, don't update cooldown
+                        if dry_run:
+                            return result
+
+                        if cooldown_ok:
+                            self.last_signal_time[signal] = current_time_ts
+                            logger.info(f"🚀 SIGNAL GENERATED: {signal} @ {current_price} | Contract: {self.target_contract}")
+
+                            # Extract specific indicators for signal_data
+                            rsi = result.get('rsi')
+                            supertrend = result.get('supertrend')
+
+                            signal_data = {
+                                "signal": signal,
+                                "price": current_price,
+                                "timestamp": datetime.datetime.now().isoformat(),
+                                "reasoning": self.latest_reasoning,
+                                "target_contract": self.target_contract,
+                                "expiry": greeks.get('expiry_date') if greeks else None,
+                                "strike": greeks.get('atm_strike') if greeks else None,
+                                "greeks": greeks,
+                                "market_data": market_state,
+                                "indicators": {
+                                    "rsi": rsi,
+                                    "supertrend": supertrend,
+                                    "ema_5": cur_ema_5,
+                                    "ema_20": cur_ema_20,
+                                }
+                            }
+                            return signal_data
+                        else:
+                            logger.warning(f"⏳ TRADE BLOCKED: Signal '{signal}' suppressed by cooldown. {self.signal_cooldown_seconds - diff:.2f}s remaining.")
+                else:
+                    # Signal is HOLD — no trade will be attempted
+                    hold_reason = result.get('reason', 'unknown')
+                    logger.info(f"🔒 NO TRADE: Signal=HOLD | Reason: {hold_reason}")
             else:
-                self.latest_signal = result.get('signal', 'HOLD')
                 if result == "WAITING_DATA":
                     logger.debug(f"Strategy waiting for data (have {len(df)} candles)")
-                else:
+                elif isinstance(result, dict):
+                    self.latest_signal = result.get('signal', 'HOLD')
                     # Persist the full result dictionary so frontend can see progress/indicators
                     self.latest_strategy_data = result
 

@@ -48,6 +48,12 @@ class MarketDataManager:
         self.previous_close = None
         self.market_movement = None  # Points up/down from previous close
 
+        # API-provided Greeks (from option_greeks subscription mode)
+        self._api_greeks_ce = None  # {delta, gamma, theta, vega, iv}
+        self._api_greeks_pe = None
+        self._api_greeks_timestamp = 0.0
+        self._use_api_greeks = True  # Prefer API greeks over local Black-Scholes
+
         # Price Cache for Real-time PnL
         self.instrument_prices: Dict[str, float] = {}  # key -> price
         self.subscribed_keys: set = set() # Track all keys we are subscribed to
@@ -68,6 +74,8 @@ class MarketDataManager:
         self.pcr_option_keys = []  # List of all option instrument keys for PCR
         self.pcr_option_metadata = {}  # Map: instrument_key -> {strike, option_type, trading_symbol}
         self.pcr_oi_data = {}  # Map: instrument_key -> open_interest value
+        self._oi_first_received_logged = False  # One-time log when first OI arrives
+        self._pe_feed_debug_logged = False  # One-time raw feed dump for PE option
         self.last_pcr_calculation = 0  # Timestamp of last PCR calculation
         self.pcr_calculation_interval = 5  # Calculate PCR every 5 seconds (from WebSocket OI data)
         self._last_greeks_fallback_time = 0.0  # Throttle fallback greeks fetch (avoid hammering API)
@@ -94,136 +102,134 @@ class MarketDataManager:
         self.is_running = True
         self.main_loop = asyncio.get_running_loop() # Capture loop here
         logger.info("Starting MarketDataManager...")
-        logger.info(f"  - NIFTY Key: {self.nifty_key}")
-        logger.info(f"  - Access Token Present: {bool(self.access_token)}")
         
+        # Start connection logic
+        self._start_streamer_logic()
+
+    def _start_streamer_logic(self):
+        """Internal method to initialize and connect streamer."""
         try:
             if not HAS_SDK_STREAMER:
                 logger.error("❌ Upstox SDK streamer not available")
                 raise ImportError("MarketDataStreamerV3 not available")
-            
+
+            # If streamer exists, close it first
+            if self.streamer:
+                try:
+                    self.streamer.close()
+                except:
+                    pass
+
             logger.info("Creating MarketDataStreamerV3...")
-            
-            # Fetch previous day close
-            await self._fetch_previous_close()
-            
-            # Get ATM option keys for WebSocket subscription
-            # Get current Nifty price first
-            current_nifty_price = self.data_fetcher.get_current_price(self.nifty_key)
-            if current_nifty_price and current_nifty_price > 0:
-                initial_price = current_nifty_price
-                self.current_price = current_nifty_price
-                logger.info(f"📊 Using current Nifty price for ATM and Initial State: ₹{initial_price}")
-            else:
-                initial_price = self.current_price if self.current_price > 0 else 24000
-                logger.warning(f"⚠️ Using fallback price for ATM: ₹{initial_price}")
-            
+
+            # ── Initial price fetch (needed for ATM, PCR setup) ───────────
+            if self.current_price == 0:
+                current_nifty_price = self.data_fetcher.get_current_price(self.nifty_key)
+                if current_nifty_price and current_nifty_price > 0:
+                    self.current_price = current_nifty_price
+                    logger.info(f"📊 Initial Nifty price: ₹{current_nifty_price}")
+                else:
+                    logger.warning("⚠️ Could not fetch initial Nifty price")
+
+            initial_price = self.current_price if self.current_price > 0 else 24000
+
+            # ── ATM strike calculation ────────────────────────────────────
             self.atm_strike = round(initial_price / 50) * 50
-            logger.info(f"🎯 Calculated ATM strike: {self.atm_strike}")
-            
-            # Get nearest expiry
-            self.option_expiry = self.data_fetcher.get_nearest_expiry()
-            
-            # Get option instrument keys for ATM
-            if self.option_expiry:
+            logger.info(f"🎯 ATM strike: {self.atm_strike}")
+
+            # ── Option expiry & instrument keys ───────────────────────────
+            if not self.option_expiry:
+                self.option_expiry = self.data_fetcher.get_nearest_expiry()
+
+            if self.option_expiry and (not self.option_ce_key or not self.option_pe_key):
                 self.option_ce_key = self.data_fetcher.get_option_instrument_key(
                     "NIFTY", self.option_expiry, self.atm_strike, "CE"
                 )
                 self.option_pe_key = self.data_fetcher.get_option_instrument_key(
                     "NIFTY", self.option_expiry, self.atm_strike, "PE"
                 )
-            
-            # Get all option keys for PCR calculation (strike range ±500)
-            pcr_options_data = self._get_pcr_option_keys(initial_price)
-            self.pcr_option_keys = pcr_options_data['keys']
-            self.pcr_option_metadata = pcr_options_data['metadata']
-            
-            # Build comprehensive instrument keys array
+                if self.option_ce_key and self.option_pe_key:
+                    logger.info(f"✅ ATM Options: CE={self.option_ce_key}, PE={self.option_pe_key}, Expiry={self.option_expiry}")
+                else:
+                    logger.warning(f"⚠️ Could not find ATM option instruments for strike {self.atm_strike}")
+
+            # ── PCR option keys (strike range ±500) ───────────────────────
+            if not self.pcr_option_keys:
+                pcr_options_data = self._get_pcr_option_keys(initial_price)
+                self.pcr_option_keys = pcr_options_data['keys']
+                self.pcr_option_metadata = pcr_options_data['metadata']
+                if self.pcr_option_keys:
+                    ce_count = sum(1 for meta in self.pcr_option_metadata.values() if meta['option_type'] == 'CE')
+                    pe_count = sum(1 for meta in self.pcr_option_metadata.values() if meta['option_type'] == 'PE')
+                    logger.info(f"✅ PCR Options: {len(self.pcr_option_keys)} ({ce_count} CE, {pe_count} PE)")
+
+            # ── Build instrument subscription list ────────────────────────
             instrument_keys = [self.nifty_key]
-            
-            # Add Nifty 50 Stocks
-            nifty50_keys = []
+
+            # Add Nifty 50 stocks and build ISIN mapping
             for symbol, isin in NIFTY50_STOCKS.items():
                 key = f"NSE_EQ|{isin}"
-                nifty50_keys.append(key)
+                instrument_keys.append(key)
                 self.nifty50_isins[key] = symbol
-            
-            instrument_keys.extend(nifty50_keys)
-            logger.info(f"✅ Added {len(nifty50_keys)} Nifty 50 stocks to subscription list")
-            
-            # Add ATM options
+            logger.info(f"✅ Added {len(NIFTY50_STOCKS)} Nifty 50 stocks")
+
+            # Add ATM Options
             if self.option_ce_key and self.option_pe_key:
                 instrument_keys.extend([self.option_ce_key, self.option_pe_key])
-                logger.info(f"✅ ATM Option instruments found for strike {self.atm_strike}")
-                logger.info(f"   CE: {self.option_ce_key}")
-                logger.info(f"   PE: {self.option_pe_key}")
-                logger.info(f"   Expiry: {self.option_expiry}")
-            else:
-                logger.warning(f"⚠️ Could not find ATM option instruments for strike {self.atm_strike}")
-            
+
             # Add PCR options
             if self.pcr_option_keys:
                 instrument_keys.extend(self.pcr_option_keys)
-                ce_count = sum(1 for meta in self.pcr_option_metadata.values() if meta['option_type'] == 'CE')
-                pe_count = sum(1 for meta in self.pcr_option_metadata.values() if meta['option_type'] == 'PE')
-                logger.info(f"✅ PCR Option instruments: {len(self.pcr_option_keys)} total ({ce_count} CE, {pe_count} PE)")
-                logger.info(f"   Strike range: ±500 from spot price {initial_price}")
-            else:
-                logger.warning(f"⚠️ Could not find PCR option instruments")
-            
-            # Log subscription summary
-            logger.info(f"📊 WebSocket Subscription Summary:")
-            logger.info(f"   - Nifty 50: 1 instrument")
-            logger.info(f"   - ATM Options: 2 instruments")
-            logger.info(f"   - PCR Options: {len(self.pcr_option_keys)} instruments")
-            logger.info(f"   - Total: {len(instrument_keys)} instruments")
-            logger.info(f"   - Capacity remaining: {5000 - len(instrument_keys)} / 5000")
-            
-            # Initialize with access token and all instruments
-            self.streamer = MarketDataStreamerV3(
-                api_client=None,  # Will create internally
-                instrumentKeys=instrument_keys,  # Nifty + ATM Options + PCR Options!
-                mode="full"  # Full mode for option data (bid/ask/oi/greeks)
-            )
-            
-            # Set access token
+
+            logger.info(f"📊 Total subscriptions: {len(instrument_keys)} instruments")
+
+            # ── Create streamer ───────────────────────────────────────────
             from upstox_client import ApiClient, Configuration
             config = Configuration()
             config.access_token = self.access_token
-            self.streamer.api_client = ApiClient(config)
+
+            self.streamer = MarketDataStreamerV3(
+                api_client=ApiClient(config),
+                instrumentKeys=instrument_keys,
+                mode="full"
+            )
             
-            # Register event listeners for decoded market data
-            # The streamer will automatically decode protobuf and emit "message" events with dicts
             self.streamer.on("message", self._on_streamer_message)
             self.streamer.on("open", self._on_streamer_open)
             self.streamer.on("error", self._on_streamer_error)
             self.streamer.on("close", self._on_streamer_close)
             
             logger.info("🌐 Connecting to market data stream...")
-            # Connect in background thread
+            
             def connect_wrapper():
                 try:
                     logger.info("🧵 Background thread: Starting streamer.connect()...")
                     self.streamer.connect()
                     logger.info("🧵 Background thread: streamer.connect() returned")
                 except Exception as e:
-                    logger.error(f"🧵 Background thread error: {e}", exc_info=True)
+                    logger.error(f"🧵 Background thread error: {e}")
             
             connect_thread = threading.Thread(target=connect_wrapper, daemon=True)
             connect_thread.start()
-            logger.info("✅ Background thread started")
             
-            logger.info("✅ Market data streamer initialized")
-            
-            # Start background tasks
-            self.tasks.append(asyncio.create_task(self._price_monitor_loop()))
-            self.tasks.append(asyncio.create_task(self._websocket_pcr_loop()))  # New WebSocket-based PCR loop
-            # self.tasks.append(asyncio.create_task(self._greeks_loop()))  # Disabled in favor of WebSocket streaming
-            self.tasks.append(asyncio.create_task(self._connection_monitor()))
-            logger.info("✅ All background tasks started")
+            # Initial tasks start only once
+            if not self.tasks:
+                self.tasks.append(asyncio.create_task(self._price_monitor_loop()))
+                self.tasks.append(asyncio.create_task(self._websocket_pcr_loop()))
+                self.tasks.append(asyncio.create_task(self._connection_monitor()))
+                # Fetch prev close once
+                asyncio.create_task(self._fetch_previous_close())
+                
         except Exception as e:
             logger.error(f"❌ Error starting MarketDataManager: {e}", exc_info=True)
-            raise
+
+    def update_access_token(self, token: str):
+        """Update access token and restart streamer."""
+        logger.info("🔄 MarketDataManager: Updating access token...")
+        self.access_token = token
+        if self.is_running:
+            self._start_streamer_logic()
+
 
     def _on_streamer_message(self, message):
         """Callback when streamer receives and decodes market data.
@@ -233,9 +239,13 @@ class MarketDataManager:
             
             if isinstance(message, dict) and "feeds" in message:
                 for key, feed in message["feeds"].items():
-                    if key in self.pcr_option_metadata:
-                         pass 
-                    
+                    # One-time: dump raw PE option feed to see actual structure
+                    if not self._pe_feed_debug_logged and key in self.pcr_option_metadata:
+                        meta = self.pcr_option_metadata[key]
+                        if meta.get('option_type') == 'PE':
+                            self._pe_feed_debug_logged = True
+                            logger.info(f"🔍 RAW PE FEED DUMP for {key} (strike={meta.get('strike')}): {feed}")
+
                     if isinstance(feed, dict):
                         # Extract LTP and OI from various possible structures
                         price = None
@@ -251,11 +261,20 @@ class MarketDataManager:
                             elif "marketFF" in ff and "ltpc" in ff["marketFF"]:
                                 price = ff["marketFF"]["ltpc"].get("ltp")
                                 
-                                # Extract Open Interest
-                                if "oi" in ff["marketFF"]:
-                                    oi = ff["marketFF"]["oi"]
-                                elif "eFeedDetails" in ff["marketFF"]:
-                                    oi = ff["marketFF"]["eFeedDetails"].get("oi")
+                                # Extract Open Interest from various V3 feed locations
+                                mff = ff["marketFF"]
+                                if "oi" in mff:
+                                    oi = mff["oi"]
+                                elif "eFeedDetails" in mff:
+                                    oi = mff["eFeedDetails"].get("oi")
+                                elif "marketOHLC" in mff:
+                                    # OI can also be in OHLC entries
+                                    ohlc_data = mff["marketOHLC"]
+                                    if isinstance(ohlc_data, dict) and "ohlc" in ohlc_data:
+                                        for ohlc_entry in ohlc_data["ohlc"]:
+                                            if isinstance(ohlc_entry, dict) and "oi" in ohlc_entry:
+                                                oi = ohlc_entry["oi"]
+                                                break
                         
                         # Handle flat structure (if any)
                         elif "ltpc" in feed and isinstance(feed["ltpc"], dict):
@@ -266,11 +285,16 @@ class MarketDataManager:
                         # store OI data for PCR options
                         if oi is not None and key in self.pcr_option_metadata:
                             self.pcr_oi_data[key] = float(oi)
-                            # logger.debug(f"📊 OI Update: {key} -> {oi}")  # Too noisy for production, useful for debug
+                            if not self._oi_first_received_logged:
+                                self._oi_first_received_logged = True
+                                logger.info(f"📊 OI DATA FLOWING: First OI received for {key} = {oi} (OI analysis will activate after 3 snapshots)")
 
                         # Extract bid/ask depth from fullFeed for order book intelligence
                         if "fullFeed" in feed:
                             self._extract_bid_ask(key, feed["fullFeed"])
+
+                        # Extract API-provided option Greeks (from option_greeks subscription mode)
+                        self._extract_api_greeks(key, feed)
 
                         # CACHE PRICE for PnL
                         if price is not None:
@@ -363,6 +387,7 @@ class MarketDataManager:
                         if price is not None:
                             price = float(price)
                             
+                            
                             # Check if this is Nifty 50
                             if key == self.nifty_key:
                                 self.current_price = price
@@ -371,22 +396,8 @@ class MarketDataManager:
                                 if self.previous_close and self.previous_close > 0:
                                     self.market_movement = self.current_price - self.previous_close
                                 
-                                # Check if ATM has changed
-                                new_atm = round(self.current_price / 50) * 50
-                                if new_atm != self.atm_strike and self.atm_strike > 0:
-                                    # ATM has changed, schedule async resubscription
-                                    logger.info(f"🔔 ATM strike changing: {self.atm_strike} → {new_atm}")
-                                    try:
-                                        if self.main_loop and self.main_loop.is_running():
-                                            # Schedule the coroutine to run in the event loop
-                                            asyncio.run_coroutine_threadsafe(self._resubscribe_atm_options(new_atm), self.main_loop)
-                                        else:
-                                            logger.warning("⚠️ Event loop not running, cannot resubscribe ATM options")
-                                    except RuntimeError:
-                                        logger.warning("⚠️ No event loop available, cannot resubscribe ATM options")
-                                else:
-                                    # Just update the ATM value for display
-                                    self.atm_strike = new_atm
+                                # Update ATM strike and subscriptions if needed
+                                self._update_atm_from_price(self.current_price)
                                 
                                 movement_str = f"{self.market_movement:+.2f}" if self.market_movement else "N/A"
                                 logger.info(f"💰 Nifty price: ₹{price:.2f} (ATM: {self.atm_strike}) | Movement: {movement_str}")
@@ -409,18 +420,55 @@ class MarketDataManager:
                             elif key == self.option_ce_key:
                                 self.option_ce_price = price
                                 logger.info(f"📈 CE option ({self.atm_strike}): ₹{price:.2f}")
-                                # Calculate Greeks when we have both prices
-                                self._calculate_and_emit_greeks()
-                            
+                                # Use API greeks if available, otherwise local Black-Scholes
+                                self._emit_greeks_best_source()
+
                             # Check if this is PE option
                             elif key == self.option_pe_key:
                                 self.option_pe_price = price
                                 logger.info(f"📉 PE option ({self.atm_strike}): ₹{price:.2f}")
-                                # Calculate Greeks when we have both prices
-                                self._calculate_and_emit_greeks()
+                                # Use API greeks if available, otherwise local Black-Scholes
+                                self._emit_greeks_best_source()
                 
         except Exception as e:
             logger.error(f"Error processing streamer message: {e}", exc_info=True)
+
+    def _update_atm_from_price(self, price: float):
+        """Update ATM strike based on current price and trigger resubscription if changed."""
+        try:
+            new_atm = round(price / 50) * 50
+            
+            # Subscribe if ATM changed OR if we have no ATM yet (initial state)
+            if new_atm != self.atm_strike:
+                # ATM has changed, schedule async resubscription
+                logger.info(f"🔔 ATM strike changing: {self.atm_strike} → {new_atm}")
+                
+                # Update current ATM immediately to prevent multiple triggers
+                old_atm = self.atm_strike
+                self.atm_strike = new_atm
+                
+                try:
+                    # If main loop is running, schedule the coroutine
+                    if self.main_loop and self.main_loop.is_running():
+                        asyncio.run_coroutine_threadsafe(self._resubscribe_atm_options(new_atm), self.main_loop)
+                    else:
+                        # If we are in the main loop (e.g. during sync call), we can't schedule threadsafe easily?
+                        # Actually _on_streamer_message runs in a thread, so run_coroutine_threadsafe is correct.
+                        # But if called from _connection_monitor (async), we should await it if possible, 
+                        # or just create a task.
+                        
+                        # We need to detect if we are in a loop or not, but `main_loop` should be set.
+                        if self.main_loop:
+                             asyncio.run_coroutine_threadsafe(self._resubscribe_atm_options(new_atm), self.main_loop)
+                        else:
+                            logger.warning("⚠️ Event loop not captured, cannot resubscribe ATM options")
+                except RuntimeError:
+                    logger.warning("⚠️ Runtime error scheduling ATM resubscription")
+            else:
+                # Just ensure it's set (redundant but safe)
+                self.atm_strike = new_atm
+        except Exception as e:
+            logger.error(f"Error updating ATM from price: {e}")
     
     def _extract_bid_ask(self, key: str, full_feed: dict) -> None:
         """
@@ -428,22 +476,23 @@ class MarketDataManager:
         cache it for the OrderBook intelligence module.
 
         Upstox V3 full-mode protobuf decodes to:
-          fullFeed.marketFF.bidAskQuote  (list of BidAskQuote objects)
-        Each entry: { bidQty, bidPrice, askQty, askPrice }
+          fullFeed.marketFF.marketLevel.bidAskQuote  (list of Quote objects)
+        Each entry: { bidQ, bidP, askQ, askP }
         """
         try:
             mff = full_feed.get("marketFF", {})
-            raw_depth = mff.get("bidAskQuote", [])
+            market_level = mff.get("marketLevel", {})
+            raw_depth = market_level.get("bidAskQuote", [])
             if not raw_depth:
                 return
 
             bids = []
             asks = []
             for entry in raw_depth:
-                bid_price = entry.get("bidPrice")
-                bid_qty   = entry.get("bidQty")
-                ask_price = entry.get("askPrice")
-                ask_qty   = entry.get("askQty")
+                bid_price = entry.get("bidP")
+                bid_qty   = entry.get("bidQ")
+                ask_price = entry.get("askP")
+                ask_qty   = entry.get("askQ")
                 if bid_price is not None and bid_qty is not None:
                     bids.append({"price": float(bid_price), "qty": float(bid_qty)})
                 if ask_price is not None and ask_qty is not None:
@@ -457,17 +506,32 @@ class MarketDataManager:
     def _push_intelligence_updates(self) -> None:
         """
         Push the latest market snapshots to the intelligence engine.
-        Called after nifty50 quotes are updated (once per tick cycle).
+        Called after nifty50 quotes are updated and after Greeks/IV updates.
         """
         if not self.intelligence_engine:
             return
         try:
+            # Extract current ATM IV directly for IVRankModule (avoids None-in-dict issues)
+            iv = None
+            if self.latest_greeks:
+                ce_data = self.latest_greeks.get("ce") or {}
+                pe_data = self.latest_greeks.get("pe") or {}
+                ce_iv = ce_data.get("iv")
+                pe_iv = pe_data.get("iv")
+                if ce_iv and pe_iv:
+                    iv = (float(ce_iv) + float(pe_iv)) / 2
+                elif ce_iv:
+                    iv = float(ce_iv)
+                elif pe_iv:
+                    iv = float(pe_iv)
+
             self.intelligence_engine.update({
                 "nifty50_quotes":      dict(self.nifty50_quotes),
                 "bid_ask":             dict(self.bid_ask_cache),
                 "option_ce_key":       self.option_ce_key,
                 "option_pe_key":       self.option_pe_key,
                 "greeks":              self.latest_greeks,
+                "iv":                  iv,  # Direct IV for IVRankModule
                 "pcr_oi_data":         dict(self.pcr_oi_data),
                 "pcr_option_metadata": dict(self.pcr_option_metadata),
                 "current_price":       self.current_price,
@@ -475,7 +539,7 @@ class MarketDataManager:
         except Exception as e:
             logger.debug(f"Intelligence push error: {e}")
 
-    def _on_streamer_open(self):
+    def _on_streamer_open(self, *args):
         """Called when streamer connection opens."""
         logger.info("✅ Market data stream connected")
         
@@ -494,12 +558,155 @@ class MarketDataManager:
         """Called when streamer has an error."""
         logger.error(f"❌ Market data stream error: {error}")
     
-    def _on_streamer_close(self):
+    def _on_streamer_close(self, *args):
         """Called when streamer connection closes."""
         logger.warning("⚠️ Market data stream disconnected")
     
+    def _extract_api_greeks(self, key: str, feed: dict):
+        """Extract option Greeks delivered by the option_greeks subscription mode."""
+        try:
+            greeks_data = None
+
+            # Option greeks mode delivers data in optionGreeks field
+            if "optionGreeks" in feed:
+                greeks_data = feed["optionGreeks"]
+            elif "fullFeed" in feed:
+                ff = feed["fullFeed"]
+                if "optionGreeks" in ff:
+                    greeks_data = ff["optionGreeks"]
+                elif "marketFF" in ff and "optionGreeks" in ff["marketFF"]:
+                    greeks_data = ff["marketFF"]["optionGreeks"]
+
+            if not greeks_data:
+                return
+
+            import time
+            # Upstox may use 'iv' or 'impliedVolatility' depending on API version
+            iv_val = greeks_data.get("iv") or greeks_data.get("impliedVolatility") or greeks_data.get("implied_volatility")
+            parsed = {
+                "delta": greeks_data.get("delta"),
+                "gamma": greeks_data.get("gamma"),
+                "theta": greeks_data.get("theta"),
+                "vega": greeks_data.get("vega"),
+                "iv": iv_val,
+            }
+
+            # Only accept if we have at least delta
+            if parsed["delta"] is None:
+                return
+
+            logger.info(f"📊 API Greeks for {key}: delta={parsed['delta']}, iv={parsed['iv']}, keys={list(greeks_data.keys())}")
+
+            if key == self.option_ce_key:
+                self._api_greeks_ce = parsed
+                self._api_greeks_timestamp = time.time()
+                logger.debug(f"API Greeks CE: delta={parsed['delta']:.4f} iv={parsed['iv'] or 0:.2f}")
+            elif key == self.option_pe_key:
+                self._api_greeks_pe = parsed
+                self._api_greeks_timestamp = time.time()
+                logger.debug(f"API Greeks PE: delta={parsed['delta']:.4f} iv={parsed['iv'] or 0:.2f}")
+
+        except Exception as e:
+            logger.debug(f"Error extracting API greeks for {key}: {e}")
+
+    def _emit_greeks_best_source(self):
+        """Emit Greeks using API values if fresh, otherwise fall back to local Black-Scholes."""
+        import time
+
+        api_fresh = (
+            self._use_api_greeks
+            and self._api_greeks_ce is not None
+            and self._api_greeks_pe is not None
+            and (time.time() - self._api_greeks_timestamp) < 10  # Stale after 10 seconds
+        )
+
+        if api_fresh:
+            self._emit_api_greeks()
+        else:
+            self._calculate_and_emit_greeks()
+
+    def _emit_api_greeks(self):
+        """Build latest_greeks from API-provided values and emit to callbacks."""
+        try:
+            if not self._api_greeks_ce or not self._api_greeks_pe:
+                return
+
+            # Get IV from API greeks; fall back to Black-Scholes if API IV is missing/zero
+            ce_iv = self._api_greeks_ce.get('iv')
+            pe_iv = self._api_greeks_pe.get('iv')
+
+            if (not ce_iv or not pe_iv) and self.option_expiry and self.current_price > 0:
+                try:
+                    from app.core.greeks import GreeksCalculator
+                    greeks_calc = GreeksCalculator()
+                    T = greeks_calc.time_to_expiry(str(self.option_expiry))
+                    if T > 0:
+                        if not ce_iv and self.option_ce_price > 0:
+                            ce_iv = greeks_calc.implied_volatility(
+                                self.option_ce_price, self.current_price, self.atm_strike, T, 'CE'
+                            )
+                            logger.debug(f"IV fallback (BS) for CE: {ce_iv}")
+                        if not pe_iv and self.option_pe_price > 0:
+                            pe_iv = greeks_calc.implied_volatility(
+                                self.option_pe_price, self.current_price, self.atm_strike, T, 'PE'
+                            )
+                            logger.debug(f"IV fallback (BS) for PE: {pe_iv}")
+                except Exception as e:
+                    logger.debug(f"IV fallback calculation error: {e}")
+
+            self.latest_greeks = {
+                'atm_strike': self.atm_strike,
+                'expiry_date': str(self.option_expiry),
+                'ce_instrument_key': self.option_ce_key,
+                'pe_instrument_key': self.option_pe_key,
+                'source': 'api',
+                'ce': {
+                    'price': self.option_ce_price,
+                    'iv': ce_iv or 0,
+                    'delta': self._api_greeks_ce.get('delta') or 0,
+                    'gamma': self._api_greeks_ce.get('gamma') or 0,
+                    'theta': self._api_greeks_ce.get('theta') or 0,
+                    'vega': self._api_greeks_ce.get('vega') or 0,
+                    'rho': 0,
+                    'quality_score': 95,  # API greeks are exchange-accurate
+                },
+                'pe': {
+                    'price': self.option_pe_price,
+                    'iv': pe_iv or 0,
+                    'delta': self._api_greeks_pe.get('delta') or 0,
+                    'gamma': self._api_greeks_pe.get('gamma') or 0,
+                    'theta': self._api_greeks_pe.get('theta') or 0,
+                    'vega': self._api_greeks_pe.get('vega') or 0,
+                    'rho': 0,
+                    'quality_score': 95,
+                },
+            }
+
+            logger.debug(f"Using API greeks: CE delta={self._api_greeks_ce.get('delta', 0):.4f}, PE delta={self._api_greeks_pe.get('delta', 0):.4f}")
+
+            # Push IV data to intelligence engine (IV Rank, etc.)
+            self._push_intelligence_updates()
+
+            # Emit to callbacks
+            data = {'greeks': self.latest_greeks}
+            for callback in list(self.on_market_data_update):
+                if asyncio.iscoroutinefunction(callback):
+                    try:
+                        if self.main_loop:
+                            asyncio.run_coroutine_threadsafe(callback(data), self.main_loop)
+                    except Exception as e:
+                        logger.error(f"Error in async API greeks callback: {e}")
+                else:
+                    try:
+                        callback(data)
+                    except Exception as e:
+                        logger.error(f"Error in API greeks callback: {e}")
+
+        except Exception as e:
+            logger.error(f"Error emitting API greeks: {e}", exc_info=True)
+
     def _calculate_and_emit_greeks(self):
-        """Calculate Greeks from cached option prices and emit update."""
+        """Calculate Greeks from cached option prices and emit update (local Black-Scholes fallback)."""
         try:
             # Need all data to calculate Greeks
             if not all([
@@ -566,6 +773,7 @@ class MarketDataManager:
                 'expiry_date': str(self.option_expiry),
                 'ce_instrument_key': self.option_ce_key,
                 'pe_instrument_key': self.option_pe_key,
+                'source': 'black_scholes',
                 'ce': {
                     'price': self.option_ce_price,
                     'iv': ce_iv,
@@ -581,7 +789,10 @@ class MarketDataManager:
             }
             
             logger.debug(f"📊 Greeks calculated: CE ₹{self.option_ce_price:.2f} (Q:{ce_validation['quality_score']}), PE ₹{self.option_pe_price:.2f} (Q:{pe_validation['quality_score']})")
-            
+
+            # Push IV data to intelligence engine (IV Rank, etc.)
+            self._push_intelligence_updates()
+
             # Emit update to callbacks (similar to PCR updates)
             data = {'greeks': self.latest_greeks}
             for callback in list(self.on_market_data_update):
@@ -642,21 +853,28 @@ class MarketDataManager:
                     logger.info(f"✅ Unsubscribed from old options: {old_keys}")
                 except Exception as e:
                     logger.warning(f"⚠️ Error unsubscribing: {e}")
-            
-            # Subscribe to new options
+
+            # Subscribe to new options in both full and option_greeks modes
             new_keys = [new_ce_key, new_pe_key]
             if self.streamer:
                 self.streamer.subscribe(new_keys, "full")
-                logger.info(f"✅ Subscribed to new options: {new_keys}")
+                logger.info(f"✅ Subscribed to new options (full mode): {new_keys}")
+                try:
+                    self.streamer.subscribe(new_keys, "option_greeks")
+                    logger.info(f"✅ Subscribed to new options (option_greeks mode): {new_keys}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not subscribe option_greeks mode: {e}")
             
             # Update state
             self.option_ce_key = new_ce_key
             self.option_pe_key = new_pe_key
             self.atm_strike = new_atm_strike
             
-            # Reset prices (will be updated by new ticks)
+            # Reset prices and API greeks (will be updated by new ticks)
             self.option_ce_price = 0.0
             self.option_pe_price = 0.0
+            self._api_greeks_ce = None
+            self._api_greeks_pe = None
             
             logger.info(f"🎯 ATM resubscription complete")
             
@@ -739,14 +957,20 @@ class MarketDataManager:
                     # Calculate total CE and PE OI from WebSocket data
                     total_ce_oi = 0
                     total_pe_oi = 0
-                    
+                    ce_keys_with_oi = 0
+                    pe_keys_with_oi = 0
+
                     for key, oi in self.pcr_oi_data.items():
                         if key in self.pcr_option_metadata:
                             opt_type = self.pcr_option_metadata[key]['option_type']
                             if opt_type == 'CE':
                                 total_ce_oi += oi
+                                if oi > 0:
+                                    ce_keys_with_oi += 1
                             elif opt_type == 'PE':
                                 total_pe_oi += oi
+                                if oi > 0:
+                                    pe_keys_with_oi += 1
                     
                     # Calculate PCR
                     if total_ce_oi > 0:
@@ -758,7 +982,12 @@ class MarketDataManager:
                         self.latest_pcr_analysis = self.pcr_calc.get_pcr_analysis(pcr, total_pe_oi, total_ce_oi)
                         self.pcr_calc.record_pcr(pcr, total_pe_oi, total_ce_oi)
                         
-                        logger.info(f"📊 PCR Updated (WebSocket): {pcr:.4f} | CE OI: {total_ce_oi:,.0f} | PE OI: {total_pe_oi:,.0f} | Sentiment: {self.pcr_calc.get_sentiment(pcr)}")
+                        logger.info(
+                            f"📊 PCR Updated (WebSocket): {pcr:.4f} | CE OI: {total_ce_oi:,.0f} ({ce_keys_with_oi} keys) | "
+                            f"PE OI: {total_pe_oi:,.0f} ({pe_keys_with_oi} keys) | Sentiment: {self.pcr_calc.get_sentiment(pcr)}"
+                        )
+                        if pe_keys_with_oi == 0:
+                            logger.warning(f"⚠️ PE OI is ZERO — no PE instruments reporting OI. Total OI data points: {len(self.pcr_oi_data)}")
                         logger.debug(f"   OI data points: {len(self.pcr_oi_data)}")
                     else:
                         logger.warning(f"⚠️ PCR calculation skipped: CE OI is zero")
@@ -827,20 +1056,39 @@ class MarketDataManager:
             await asyncio.sleep(0.1)
 
     async def _connection_monitor(self):
-        """Monitor streamer connection status and provide fallback data."""
+        """Monitor streamer connection status and auto-reconnect if needed."""
+        errors_count = 0
         while self.is_running:
             try:
                 # Check streamer state - look for feeder (WebSocket connection)
                 feeder_connected = (
                     self.streamer is not None and
                     hasattr(self.streamer, 'feeder') and 
-                    self.streamer.feeder is not None
+                    self.streamer.feeder is not None and
+                    getattr(self.streamer.feeder, 'connected', False)
                 )
                 
-                # Also check if streamer has any subscriptions
+                # Also check API client token validity
+                if errors_count > 3:
+                     logger.warning("⚠️ Multiple connection failures. Consider checking access token.")
+                
+                if not feeder_connected:
+                    logger.warning(f"⚠️ Streamer disconnected (Attempt {errors_count + 1}). Reconnecting...")
+                    errors_count += 1
+                    try:
+                         # Re-run start logic which handles restart
+                         self._start_streamer_logic()
+                         # Reset stats if successful (though start logic does it async, 
+                         # we assume it spins up thread)
+                         await asyncio.sleep(5) 
+                    except Exception as e:
+                        logger.error(f"Reconnection attempt failed: {e}")
+                else:
+                    errors_count = 0 
+                
+                # Check subscriptions
                 has_subs = False
                 if self.streamer and hasattr(self.streamer, 'subscriptions'):
-                    # Check if any subscriptions exist in any mode
                     for mode_subs in self.streamer.subscriptions.values():
                         if mode_subs:
                             has_subs = True
@@ -855,12 +1103,14 @@ class MarketDataManager:
                     price = await loop.run_in_executor(None, self.data_fetcher.get_current_price, self.nifty_key)
                     if price and price > 0:
                         self.current_price = price
+                        # Ensure ATM is updated even from API fallback
+                        self._update_atm_from_price(price)
                         logger.info(f"✅ Fetched price via API: ₹{price:.2f}")
                     
             except Exception as e:
                 logger.error(f"Connection monitor error: {e}", exc_info=True)
             
-            await asyncio.sleep(5)
+            await asyncio.sleep(10)
 
     async def _pcr_loop(self):
         """Fetches PCR and VIX periodically."""

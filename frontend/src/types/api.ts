@@ -94,15 +94,21 @@ export interface ReasoningData {
 
 export interface Position {
     id: string;
+    order_id?: string;
+    order_status?: string;
     instrument_key: string;
     entry_price: number;
+    current_price?: number;
     quantity: number;
     position_type: string;
+    strike?: number;
     stop_loss: number;
     target: number;
     trailing_sl: number | null;
     trailing_sl_activated: boolean;
     entry_time: string;
+    unrealized_pnl?: number;
+    unrealized_pnl_pct?: number;
 }
 
 export interface Trade {
@@ -192,12 +198,35 @@ export interface PortfolioGreeksContext {
     position_count: number;
 }
 
+export interface OIAnalysisContext {
+    buildup_signal: 'LONG_BUILDUP' | 'SHORT_COVERING' | 'SHORT_BUILDUP' | 'LONG_UNWINDING' | 'NEUTRAL';
+    oi_change_pct: number;
+    ce_oi_change_pct: number;
+    pe_oi_change_pct: number;
+    price_direction: 'UP' | 'DOWN' | 'FLAT';
+    confirms_ce: boolean;
+    confirms_pe: boolean;
+    max_oi_ce_strike: number | null;
+    max_oi_pe_strike: number | null;
+    max_pain_strike: number | null;
+    distance_from_max_pain: number | null;
+    distance_from_max_pain_pct: number | null;
+    snapshots_count: number;
+}
+
+export interface PDHPDLPDCData {
+    pdh: number | null;
+    pdl: number | null;
+    pdc: number | null;
+}
+
 export interface IntelligenceContext {
     market_regime?: MarketRegimeContext;
     iv_rank?: IVRankContext;
     market_breadth?: MarketBreadthContext;
     order_book?: OrderBookContext;
     portfolio_greeks?: PortfolioGreeksContext;
+    oi_analysis?: OIAnalysisContext;
 }
 
 export interface ModuleToggleState {

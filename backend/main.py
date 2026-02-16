@@ -12,6 +12,7 @@ from app.managers.risk_manager import RiskManager
 from app.core.market_data import MarketDataManager
 from app.core.strategy_runner import StrategyRunner
 from app.core.trade_executor import TradeExecutor
+from app.core.portfolio_stream import PortfolioStreamManager
 
 # ── Intelligence Engine ────────────────────────────────────────────────────
 from app.intelligence import IntelligenceEngine
@@ -36,6 +37,7 @@ class TradingBot:
         self.market_data: Optional[MarketDataManager] = None
         self.strategy_runner: Optional[StrategyRunner] = None
         self.trade_executor: Optional[TradeExecutor] = None
+        self.portfolio_stream: Optional[PortfolioStreamManager] = None
 
         # Intelligence Engine
         self.intelligence_engine: Optional[IntelligenceEngine] = None
@@ -98,6 +100,10 @@ class TradingBot:
         )
         self.trade_executor = TradeExecutor(self.order_manager, self.position_manager, self.risk_manager)
 
+        # ── Portfolio Stream (real-time order status) ─────────────────────────
+        self.portfolio_stream = PortfolioStreamManager(self.access_token)
+        self.portfolio_stream.on_order_update.append(self._on_order_update)
+
         # Wire up events
         self.market_data.on_price_update.append(self._on_price_update)
 
@@ -125,6 +131,8 @@ class TradingBot:
             await self.market_data.start()
         if self.strategy_runner:
             self.strategy_runner.start()
+        if self.portfolio_stream:
+            await self.portfolio_stream.start()
 
         # Start periodic strategy update task (runs even when market is closed)
         asyncio.create_task(self._periodic_strategy_update())
@@ -137,13 +145,56 @@ class TradingBot:
             
         self.is_running = False
         self.log("Stopping Bot...")
-        
+
+        if self.portfolio_stream:
+            await self.portfolio_stream.stop()
         if self.market_data:
             await self.market_data.stop()
         if self.strategy_runner:
             self.strategy_runner.stop()
-            
+
         self.log("Bot Stopped.")
+
+    def _on_order_update(self, order_event: dict):
+        """Handle real-time order updates from portfolio stream."""
+        order_id = order_event.get("order_id")
+        status = order_event.get("status", "")
+        fill_price = order_event.get("average_price", 0.0)
+        filled_qty = order_event.get("filled_quantity", 0)
+
+        if not order_id or not self.position_manager:
+            return
+
+        # Map Upstox status to our status
+        status_map = {
+            "complete": "COMPLETE",
+            "rejected": "REJECTED",
+            "cancelled": "CANCELLED",
+            "open": "OPEN",
+            "pending": "PENDING",
+            "trigger pending": "PENDING",
+        }
+        mapped_status = status_map.get(status.lower(), status.upper())
+
+        self.position_manager.update_order_status(
+            order_id=order_id,
+            status=mapped_status,
+            fill_price=fill_price if fill_price > 0 else None,
+            filled_qty=filled_qty if filled_qty > 0 else None,
+        )
+
+        # Broadcast order event to frontend via status callback
+        if self.status_callback:
+            try:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self.status_callback({
+                        "type": "order_update",
+                        "data": order_event,
+                    }))
+            except Exception as e:
+                logger.debug(f"Could not broadcast order event: {e}")
 
     async def _on_price_update(self, price: float):
         """Orchestrator for price updates."""
@@ -162,6 +213,9 @@ class TradingBot:
             # 3. Execute Trade if Signal
             if signal_data and self.trade_executor:
                 await self.trade_executor.execute_trade(signal_data)
+            elif signal_data is None and self.trade_executor:
+                # Signal was HOLD or strategy returned None — logged in strategy_runner
+                pass
                 
             # 3b. Push positions to PortfolioGreeks intelligence module
             if self.intelligence_engine and self.position_manager:
@@ -313,6 +367,7 @@ class TradingBot:
             "volume_ratio": strategy_data.get("volume_ratio", 0),
             "atr_pct": strategy_data.get("atr_pct", 0),
             "progress": strategy_data.get("progress", None),
+            "pdh_pdl_pdc": strategy_data.get("pdh_pdl_pdc"),
         }
         
         # Update current_price on each position before serializing (real-time P&L)
@@ -345,10 +400,11 @@ class TradingBot:
             for pos in paper_mgr.get_open_positions():
                 all_positions.append(pos)
 
-        # Unified trade history from paper_mgr (ground truth)
-        unified_trade_history = paper_mgr.get_trade_history(limit=20) if paper_mgr else []
+        # Unified trade history from paper_mgr (ground truth) — no limit so
+        # Trade Journal and Portfolio Stats work from the same complete dataset
+        unified_trade_history = paper_mgr.get_trade_history() if paper_mgr else []
         if not unified_trade_history and self.trade_executor:
-            unified_trade_history = self.trade_executor.trade_history[-10:]
+            unified_trade_history = self.trade_executor.trade_history[-50:]
 
         status = {
             "is_running": self.is_running,
@@ -454,8 +510,14 @@ class TradingBot:
         # Update all components with new token
         try:
             if self.market_data:
-                self.market_data.access_token = token
+                # self.market_data.access_token = token  <-- Old way
+                self.market_data.update_access_token(token) # <-- New way (restarts streamer)
                 self.log(f"✅ Token updated in market_data")
+            
+            if self.portfolio_stream:
+                self.portfolio_stream.update_access_token(token)
+                self.log(f"✅ Token updated in portfolio_stream")
+
             if self.order_manager:
                 self.order_manager.set_access_token(token)
                 self.log(f"✅ Token updated in order_manager")

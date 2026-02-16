@@ -157,6 +157,8 @@ class OptionChainManager:
                     pe_greeks=pe_greeks,
                     ce_instrument_key=ce_instrument,
                     pe_instrument_key=pe_instrument,
+                    ce_pop=ce_greeks_raw.get("pop", 0),
+                    pe_pop=pe_greeks_raw.get("pop", 0),
                 )
         except Exception as e:
             logger.error(f"Error parsing option chain: {e}")

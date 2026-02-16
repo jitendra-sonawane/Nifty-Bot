@@ -8,6 +8,7 @@ import {
     BookOpen,
     Users,
     Activity,
+    Layers,
 } from 'lucide-react';
 import type {
     IntelligenceContext,
@@ -16,6 +17,7 @@ import type {
     MarketBreadthContext,
     OrderBookContext,
     PortfolioGreeksContext,
+    OIAnalysisContext,
 } from '../../types/api';
 
 interface IntelligencePanelProps {
@@ -335,6 +337,94 @@ function ImbalanceCell({ side, imbalance, liquidity, spreadPct }: { side: string
     );
 }
 
+const buildupColor: Record<string, string> = {
+    LONG_BUILDUP: 'var(--color-profit-text)',
+    SHORT_COVERING: 'var(--color-profit-text)',
+    SHORT_BUILDUP: 'var(--color-loss-text)',
+    LONG_UNWINDING: 'var(--color-loss-text)',
+    NEUTRAL: 'var(--text-muted)',
+};
+
+const buildupLabel: Record<string, string> = {
+    LONG_BUILDUP: 'Long Buildup',
+    SHORT_COVERING: 'Short Covering',
+    SHORT_BUILDUP: 'Short Buildup',
+    LONG_UNWINDING: 'Long Unwinding',
+    NEUTRAL: 'Neutral',
+};
+
+function OIAnalysisCard({ data, enabled, onToggle }: { data?: OIAnalysisContext; enabled: boolean; onToggle: (v: boolean) => void }) {
+    const [expanded, setExpanded] = useState(true);
+    const signal = data?.buildup_signal || 'NEUTRAL';
+    return (
+        <div style={{ borderBottom: '1px solid var(--border-subtle)', paddingBottom: 4 }}>
+            <ModuleHeader
+                icon={<Layers size={13} />}
+                label="OI Analysis"
+                enabled={enabled}
+                onToggle={onToggle}
+                expanded={expanded}
+                onExpand={() => setExpanded(e => !e)}
+                badge={buildupLabel[signal] || signal}
+                badgeColor={buildupColor[signal]}
+            />
+            {expanded && enabled && (
+                <div style={{ paddingBottom: 8 }}>
+                    {!data || data.snapshots_count < 3 ? (
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                            {data ? `Building snapshots (${data.snapshots_count}/3)...` : 'Waiting for OI data...'}
+                        </span>
+                    ) : (
+                        <>
+                            {/* OI Change bars */}
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, marginBottom: 6 }}>
+                                <div style={{ background: 'var(--bg-overlay)', borderRadius: 4, padding: '4px 6px' }}>
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 2 }}>CE OI</div>
+                                    <div style={{
+                                        fontSize: 11, fontWeight: 600,
+                                        color: data.ce_oi_change_pct > 0 ? 'var(--color-loss-text)' : data.ce_oi_change_pct < 0 ? 'var(--color-profit-text)' : 'var(--text-muted)',
+                                    }}>
+                                        {data.ce_oi_change_pct > 0 ? '+' : ''}{data.ce_oi_change_pct.toFixed(2)}%
+                                    </div>
+                                    {data.max_oi_ce_strike && (
+                                        <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                                            Max: {data.max_oi_ce_strike}
+                                        </div>
+                                    )}
+                                </div>
+                                <div style={{ background: 'var(--bg-overlay)', borderRadius: 4, padding: '4px 6px' }}>
+                                    <div style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 2 }}>PE OI</div>
+                                    <div style={{
+                                        fontSize: 11, fontWeight: 600,
+                                        color: data.pe_oi_change_pct > 0 ? 'var(--color-profit-text)' : data.pe_oi_change_pct < 0 ? 'var(--color-loss-text)' : 'var(--text-muted)',
+                                    }}>
+                                        {data.pe_oi_change_pct > 0 ? '+' : ''}{data.pe_oi_change_pct.toFixed(2)}%
+                                    </div>
+                                    {data.max_oi_pe_strike && (
+                                        <div style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+                                            Max: {data.max_oi_pe_strike}
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+                                <Chip label="OI Chg" value={`${data.oi_change_pct > 0 ? '+' : ''}${data.oi_change_pct.toFixed(2)}%`} />
+                                <Chip label="Price" value={data.price_direction} />
+                                {data.max_pain_strike && (
+                                    <Chip label="Max Pain" value={data.max_pain_strike.toFixed(0)} />
+                                )}
+                                {data.distance_from_max_pain_pct != null && (
+                                    <Chip label="Dist" value={`${data.distance_from_max_pain_pct > 0 ? '+' : ''}${data.distance_from_max_pain_pct.toFixed(2)}%`} />
+                                )}
+                            </div>
+                        </>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
 function PortfolioGreeksCard({ data, enabled, onToggle }: { data?: PortfolioGreeksContext; enabled: boolean; onToggle: (v: boolean) => void }) {
     const [expanded, setExpanded] = useState(true);
     const risk = data?.portfolio_risk || 'LOW';
@@ -470,6 +560,11 @@ const IntelligencePanel: React.FC<IntelligencePanelProps> = ({ intelligence, onT
                         data={intelligence?.order_book}
                         enabled={intelligence?.order_book != null}
                         onToggle={(v) => onToggleModule('order_book', v)}
+                    />
+                    <OIAnalysisCard
+                        data={intelligence?.oi_analysis}
+                        enabled={intelligence?.oi_analysis != null}
+                        onToggle={(v) => onToggleModule('oi_analysis', v)}
                     />
                     <PortfolioGreeksCard
                         data={intelligence?.portfolio_greeks}

@@ -1,16 +1,22 @@
 import json
+import logging
 import os
 import datetime
 import uuid
 from typing import Optional, Dict, List
 
+logger = logging.getLogger(__name__)
+
+
 class Position:
     """Represents a single open position with entry/exit parameters."""
-    
-    def __init__(self, instrument_key: str, entry_price: float, quantity: int, 
+
+    def __init__(self, instrument_key: str, entry_price: float, quantity: int,
                  position_type: str, strike: Optional[float] = None, stop_loss_pct: float = 0.30, target_multiplier: float = 1.5,
-                 trailing_activation_pct: float = 1.0, trailing_pct: float = 0.5):
+                 trailing_activation_pct: float = 1.0, trailing_pct: float = 0.5,
+                 order_id: Optional[str] = None):
         self.id = str(uuid.uuid4())
+        self.order_id = order_id  # Upstox order ID for tracking via portfolio stream
         self.instrument_key = instrument_key
         self.entry_price = entry_price
         self.quantity = quantity
@@ -18,6 +24,7 @@ class Position:
         self.strike = strike
         self.current_price = entry_price  # Tracks live option price
         self.entry_time = datetime.datetime.now()
+        self.order_status = "PLACED"  # PLACED, FILLED, REJECTED, CANCELLED
         
         # Calculate stop loss and target
         self.stop_loss = entry_price * (1 - stop_loss_pct)
@@ -34,6 +41,8 @@ class Position:
         pnl_pct = ((self.current_price - self.entry_price) / self.entry_price * 100) if self.entry_price else 0
         return {
             "id": self.id,
+            "order_id": self.order_id,
+            "order_status": self.order_status,
             "instrument_key": self.instrument_key,
             "entry_price": self.entry_price,
             "current_price": round(self.current_price, 2),
@@ -114,9 +123,11 @@ class PositionManager:
                             entry_price=pos_data["entry_price"],
                             quantity=pos_data["quantity"],
                             position_type=pos_data["position_type"],
-                            strike=pos_data.get("strike")
+                            strike=pos_data.get("strike"),
+                            order_id=pos_data.get("order_id"),
                         )
                         pos.id = pos_data["id"]
+                        pos.order_status = pos_data.get("order_status", "PLACED")
                         pos.stop_loss = pos_data["stop_loss"]
                         pos.target = pos_data["target"]
                         pos.trailing_sl = pos_data.get("trailing_sl")
@@ -142,7 +153,7 @@ class PositionManager:
     
     def open_position(self, instrument_key: str, entry_price: float,
                      quantity: int, position_type: str, strike: Optional[float] = None,
-                     is_expiry_day: bool = False) -> Position:
+                     is_expiry_day: bool = False, order_id: Optional[str] = None) -> Position:
         """Open a new position. On expiry day, SL is tightened automatically."""
         from app.core.config import Config
 
@@ -155,12 +166,47 @@ class PositionManager:
         if is_expiry_day:
             sl_pct *= Config.EXPIRY_DAY.get("sl_tightening_factor", 0.6)  # 30% * 0.6 = 18%
 
-        position = Position(instrument_key, entry_price, quantity, position_type, strike=strike, stop_loss_pct=sl_pct)
+        position = Position(instrument_key, entry_price, quantity, position_type, strike=strike, stop_loss_pct=sl_pct, order_id=order_id)
         self.positions[position.id] = position
         self._save_positions()
         expiry_tag = " [0DTE: tightened SL]" if is_expiry_day else ""
-        print(f"📈 Position Opened{expiry_tag}: {position_type} @ {entry_price} (SL: {position.stop_loss:.2f}, Target: {position.target:.2f})")
+        logger.info(f"Position Opened{expiry_tag}: {position_type} @ {entry_price} (SL: {position.stop_loss:.2f}, Target: {position.target:.2f})")
         return position
+
+    def update_order_status(self, order_id: str, status: str,
+                            fill_price: Optional[float] = None,
+                            filled_qty: Optional[int] = None) -> Optional[Position]:
+        """Update a position's order status based on portfolio stream events."""
+        for pos in self.positions.values():
+            if pos.order_id == order_id:
+                pos.order_status = status
+
+                if status == "COMPLETE" and fill_price:
+                    pos.entry_price = fill_price
+                    pos.stop_loss = fill_price * (1 - 0.30)
+                    pos.target = fill_price * 1.5
+                    logger.info(f"Order {order_id} filled @ {fill_price} (was {pos.entry_price})")
+
+                if status == "REJECTED" or status == "CANCELLED":
+                    logger.warning(f"Order {order_id} {status} - removing position {pos.id}")
+                    del self.positions[pos.id]
+                    self._save_positions()
+                    return None
+
+                if filled_qty and filled_qty != pos.quantity:
+                    pos.quantity = filled_qty
+                    logger.info(f"Order {order_id} partial fill: qty updated to {filled_qty}")
+
+                self._save_positions()
+                return pos
+        return None
+
+    def find_by_order_id(self, order_id: str) -> Optional[Position]:
+        """Find a position by its Upstox order ID."""
+        for pos in self.positions.values():
+            if pos.order_id == order_id:
+                return pos
+        return None
     
     def _is_valid_instrument_key(self, instrument_key: str) -> bool:
         """Validate instrument_key format - should be NSE_FO|xxxxx or NSE_INDEX|xxxxx."""

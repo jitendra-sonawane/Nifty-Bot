@@ -15,9 +15,12 @@ key is missing, the filter defaults to PASS so that legacy behaviour is preserve
 """
 
 import datetime
+import logging
 import pandas as pd
 import numpy as np
 from typing import Any, Dict, Optional
+
+logger = logging.getLogger(__name__)
 
 
 class StrategyEngine:
@@ -372,7 +375,7 @@ class StrategyEngine:
         SHORT_COVERING / LONG_UNWINDING are weak signals → allow with warning.
         """
         oi_ctx = intel.get("oi_analysis", {})
-        if not oi_ctx or oi_ctx.get("snapshots_count", 0) < 5:
+        if not oi_ctx or oi_ctx.get("snapshots_count", 0) < 3:
             return True, ""  # Not enough data yet
 
         buildup = oi_ctx.get("buildup_signal", "NEUTRAL")
@@ -449,6 +452,35 @@ class StrategyEngine:
             return False, f"0DTE: blocked after {block_after} (gamma risk)"
 
         return True, "0DTE: tightened SL, reduced size⚠"
+
+    @staticmethod
+    def _check_pop_filter(intel: Dict, signal_direction: str) -> tuple[bool, str]:
+        """
+        Use Probability of Profit from option chain to confirm signal quality.
+        POP < 25% for a directional buyer suggests unfavorable odds.
+        This is a soft filter — it doesn't block, but warns.
+        """
+        if not intel:
+            return True, ""
+
+        option_chain = intel.get("option_chain_summary", {})
+        if not option_chain:
+            return True, ""
+
+        atm = option_chain.get("atm_entry", {})
+        if not atm:
+            return True, ""
+
+        if signal_direction == "BUY_CE":
+            pop = atm.get("ce_pop", 0)
+            if pop > 0 and pop < 25:
+                return False, f"CE POP={pop:.0f}% (too low)"
+        elif signal_direction == "BUY_PE":
+            pop = atm.get("pe_pop", 0)
+            if pop > 0 and pop < 25:
+                return False, f"PE POP={pop:.0f}% (too low)"
+
+        return True, ""
 
     # ── Main Signal Method ──────────────────────────────────────────────────
 
@@ -563,7 +595,7 @@ class StrategyEngine:
         else:
             ema_bullish = ema_5 > ema_20
             ema_bearish = ema_5 < ema_20
-        filter_checks['ema_crossover'] = ema_bullish or ema_bearish
+        filter_checks['ema_crossover'] = (ema_bullish or ema_5 > ema_20) or (ema_bearish or ema_5 < ema_20) if ema_5 != ema_20 else False
 
         # 3. RSI
         bullish_rsi = rsi > 55
@@ -613,6 +645,7 @@ class StrategyEngine:
                 passes_tod,      r_tod     = self._check_time_of_day_filter(current_time, direction)
                 passes_oi,       r_oi      = self._check_oi_buildup_filter(intel, direction) if intel else (True, "")
                 passes_expiry,   r_expiry  = self._check_expiry_day_filter(greeks, current_time, direction)
+                passes_pop,      r_pop     = self._check_pop_filter(intel, direction) if intel else (True, "")
 
                 intelligence_filter_reasons[direction] = {
                     "market_regime":  (passes_regime,    r_regime),
@@ -624,6 +657,7 @@ class StrategyEngine:
                     "time_of_day":    (passes_tod,        r_tod),
                     "oi_buildup":     (passes_oi,         r_oi),
                     "expiry_day":     (passes_expiry,     r_expiry),
+                    "pop":            (passes_pop,        r_pop),
                 }
 
         def intel_pass(direction: str) -> bool:
@@ -643,22 +677,20 @@ class StrategyEngine:
 
         # Populate aggregate filter booleans for frontend display
         if not backtest_mode and intelligence_filter_reasons:
-            ce_intel_ok = intel_pass("BUY_CE")
-            pe_intel_ok = intel_pass("BUY_PE")
-            filter_checks['market_regime']  = ce_intel_ok or pe_intel_ok
-            filter_checks['iv_rank']        = ce_intel_ok or pe_intel_ok
-            filter_checks['market_breadth'] = ce_intel_ok or pe_intel_ok
-            filter_checks['order_book']     = ce_intel_ok or pe_intel_ok
-            # Per-filter display for new gates
+            # Per-filter display: each filter shows its own pass/fail status
             def _filter_ok(key: str) -> bool:
                 ce = intelligence_filter_reasons.get("BUY_CE", {}).get(key, (True, ""))[0]
                 pe = intelligence_filter_reasons.get("BUY_PE", {}).get(key, (True, ""))[0]
                 return ce or pe
-            filter_checks['vix']         = _filter_ok('vix')
-            filter_checks['pcr_trend']   = _filter_ok('pcr_trend')
-            filter_checks['time_of_day'] = _filter_ok('time_of_day')
-            filter_checks['oi_buildup']  = _filter_ok('oi_buildup')
-            filter_checks['expiry_day']  = _filter_ok('expiry_day')
+            filter_checks['market_regime']  = _filter_ok('market_regime')
+            filter_checks['iv_rank']        = _filter_ok('iv_rank')
+            filter_checks['market_breadth'] = _filter_ok('market_breadth')
+            filter_checks['order_book']     = _filter_ok('order_book')
+            filter_checks['vix']            = _filter_ok('vix')
+            filter_checks['pcr_trend']      = _filter_ok('pcr_trend')
+            filter_checks['time_of_day']    = _filter_ok('time_of_day')
+            filter_checks['oi_buildup']     = _filter_ok('oi_buildup')
+            filter_checks['expiry_day']     = _filter_ok('expiry_day')
 
         # ── Final decision ──────────────────────────────────────────────────
         signal = "HOLD"
@@ -712,6 +744,47 @@ class StrategyEngine:
                     reasons.append(fr)
 
             decision_reason = f"HOLD: {' '.join(reasons)}"
+
+            # ── Detailed HOLD diagnostics ──────────────────────────────────
+            # Log exactly why each direction was blocked
+            for direction in ("BUY_CE", "BUY_PE"):
+                base_ok = ce_base_ok if direction == "BUY_CE" else pe_base_ok
+                i_pass = intel_pass(direction)
+
+                if base_ok and not i_pass:
+                    # Technical indicators were GREEN but intelligence blocked
+                    failed_filters = []
+                    results = intelligence_filter_reasons.get(direction, {})
+                    for name, (ok, reason) in results.items():
+                        if not ok:
+                            failed_filters.append(f"{name}={reason}")
+                    logger.warning(
+                        f"🚫 TRADE BLOCKED [{direction}]: Technical filters PASSED but "
+                        f"intelligence filters FAILED → {', '.join(failed_filters)}"
+                    )
+                elif not base_ok:
+                    # Log which base technical filters failed
+                    tech_fails = []
+                    if direction == "BUY_CE":
+                        if not supertrend:           tech_fails.append("Supertrend↓")
+                        if not bullish_rsi:          tech_fails.append(f"RSI={rsi:.1f}(need>55)")
+                        if not (ema_bullish or ema_5 > ema_20): tech_fails.append("EMA_not_bullish")
+                        if not volatility_ok:        tech_fails.append("ATR_out_of_range")
+                        if not supertrend_confirmed: tech_fails.append("ST_not_confirmed")
+                        if not pcr_bullish:          tech_fails.append(f"PCR={pcr}(need≥1.0)")
+                        if not greeks_bullish:       tech_fails.append("Greeks_quality_low")
+                    else:
+                        if supertrend:               tech_fails.append("Supertrend↑")
+                        if not bearish_rsi:          tech_fails.append(f"RSI={rsi:.1f}(need<45)")
+                        if not (ema_bearish or ema_5 < ema_20): tech_fails.append("EMA_not_bearish")
+                        if not volatility_ok:        tech_fails.append("ATR_out_of_range")
+                        if not supertrend_confirmed: tech_fails.append("ST_not_confirmed")
+                        if not pcr_bearish:          tech_fails.append(f"PCR={pcr}(need<1.0)")
+                        if not greeks_bearish:       tech_fails.append("Greeks_quality_low")
+                    if tech_fails:
+                        logger.info(
+                            f"📊 HOLD [{direction}]: Technical filters failed → {', '.join(tech_fails)}"
+                        )
 
         # ── Progress score ──────────────────────────────────────────────────
         def sanitize(val):

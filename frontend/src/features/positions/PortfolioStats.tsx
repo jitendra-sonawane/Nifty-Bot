@@ -31,15 +31,15 @@ const PortfolioStats: React.FC<Props> = React.memo(({ stats }) => {
                 <Metric label="Capital" value={`₹${fmt(stats.initial_capital)}`} />
                 <Metric label="Balance" value={`₹${fmt(stats.current_balance)}`} />
                 <Metric label="Equity" value={`₹${fmt(equity)}`} />
-                <Metric label="Unrealised" value={`₹${fmt(stats.unrealized_pnl)}`} pnl={stats.unrealized_pnl} />
+                <Metric label="Unrealised" value={`${stats.unrealized_pnl >= 0 ? '+' : ''}₹${fmt(stats.unrealized_pnl)}`} pnl={stats.unrealized_pnl} />
             </div>
 
             <div className="border-t border-[var(--border-subtle)] pt-2 mb-2" />
 
             {/* P&L breakdown */}
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 mb-3">
-                <Metric label="Realised P&L" value={`₹${fmt(stats.realized_pnl)}`} pnl={stats.realized_pnl} />
-                <Metric label="Session P&L" value={`₹${fmt(stats.session_pnl)}`} pnl={stats.session_pnl} />
+                <Metric label="Realised P&L" value={`${stats.realized_pnl >= 0 ? '+' : ''}₹${fmt(stats.realized_pnl)}`} pnl={stats.realized_pnl} />
+                <Metric label="Session P&L" value={`${stats.session_pnl >= 0 ? '+' : ''}₹${fmt(stats.session_pnl)}`} pnl={stats.session_pnl} />
             </div>
 
             <div className="border-t border-[var(--border-subtle)] pt-2 mb-2" />

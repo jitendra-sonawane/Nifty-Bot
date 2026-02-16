@@ -97,6 +97,18 @@ class CandleManager:
         # Ensure index is datetime
         if not isinstance(self.df.index, pd.DatetimeIndex):
             self.df.index = pd.to_datetime(self.df.index)
+        
+        # Ensure index is timezone-aware (IST) if currently naive
+        # This prevents "can't compare offset-naive and offset-aware datetimes" error
+        # Assuming historical data from Upstox/external source is in IST but might be naive
+        from datetime import timezone, timedelta
+        ist = timezone(timedelta(hours=5, minutes=30))
+        
+        if self.df.index.tz is None:
+            self.df.index = self.df.index.tz_localize(ist)
+        else:
+            # If already aware but different timezone, convert to IST
+            self.df.index = self.df.index.tz_convert(ist)
             
         # Determine the start time of the next candle based on the last candle in history
         last_candle_time = self.df.index[-1]
@@ -123,6 +135,8 @@ class CandleManager:
         
         is_market_open = market_start <= current_time_ist <= market_end
         
+        is_market_open = market_start <= current_time_ist <= market_end
+        
         if not is_market_open:
             # Check if we are just initializing (allow first run regardless of time to populate state)
             if self.df.empty:
@@ -130,6 +144,8 @@ class CandleManager:
             else:
                  # Outside market hours: Do not create new candles or update existing ones
                  # This prevents "ghost candles" e.g. at 17:00 using 15:30 price
+                 # logger.debug(f"Matches Market Hours: {is_market_open} | Current: {current_time_ist}")
+                 pass
                  return False, self.df
 
         # Calculate the start time of the candle for the current time
@@ -145,13 +161,22 @@ class CandleManager:
             self.current_candle_start = candle_start_time
             is_new_candle = True
             
-        elif candle_start_time > self.df.index[-1]:
-            # New candle period started
-            if self.current_candle_start and candle_start_time >= self.current_candle_start:
-                 # Finalize previous candle (it's already in the DF, just moving to next)
-                 is_new_candle = True
-                 self._start_new_candle(candle_start_time, price, volume)
-                 self.current_candle_start = candle_start_time
+        else:
+             # Robust comparison: ensure last_index is also aware before comparing
+             last_index = self.df.index[-1]
+             if last_index.tz is None:
+                 last_index = last_index.tz_localize(ist)
+             
+             if candle_start_time > last_index:
+                # New candle period started
+                logger.info(f"⏳ Candle Check: Start={candle_start_time} > Last={last_index} | Expected={self.current_candle_start}")
+                
+                if self.current_candle_start and candle_start_time >= self.current_candle_start:
+                     # Finalize previous candle (it's already in the DF, just moving to next)
+                     is_new_candle = True
+                     logger.info(f"🕯️ NEW CANDLE DETECTED: {candle_start_time}")
+                     self._start_new_candle(candle_start_time, price, volume)
+                     self.current_candle_start = candle_start_time
         
         # Update the current (last) candle
         self._update_last_candle(price, volume)

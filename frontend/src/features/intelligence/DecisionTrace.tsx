@@ -129,6 +129,7 @@ const DecisionTrace: React.FC<DecisionTraceProps> = ({
     const ivRank = intelligence?.iv_rank;
     const breadth = intelligence?.market_breadth;
     const orderBook = intelligence?.order_book;
+    const oiAnalysis = intelligence?.oi_analysis;
 
     const isBullish = signal === 'BUY_CE';
     const isBearish = signal === 'BUY_PE';
@@ -156,6 +157,29 @@ const DecisionTrace: React.FC<DecisionTraceProps> = ({
         ? orderBook.ce_liquidity !== 'POOR' && orderBook.pe_liquidity !== 'POOR'
         : null;
 
+    // OI Buildup: blocks if direction contradicts buildup
+    const oiPass = oiAnalysis && oiAnalysis.snapshots_count >= 5
+        ? isDirectional
+            ? (isBullish
+                ? oiAnalysis.buildup_signal !== 'SHORT_BUILDUP'
+                : oiAnalysis.buildup_signal !== 'LONG_BUILDUP')
+            : true
+        : null;
+
+    const buildupLabels: Record<string, string> = {
+        LONG_BUILDUP: 'Long Buildup',
+        SHORT_COVERING: 'Short Covering',
+        SHORT_BUILDUP: 'Short Buildup',
+        LONG_UNWINDING: 'Long Unwinding',
+        NEUTRAL: 'Neutral',
+    };
+
+    // Expiry Day: blocks new entries after 14:00 on Thursday
+    const isThursday = new Date().getDay() === 4;
+    const expiryPass = isThursday
+        ? new Date().getHours() < 14
+        : true;
+
     const intelItems: { pass: boolean | null; label: string; detail: string; na: boolean }[] = [
         {
             pass: regimePass,
@@ -180,6 +204,18 @@ const DecisionTrace: React.FC<DecisionTraceProps> = ({
             label: 'Order Book Liquidity',
             detail: orderBook ? `CE:${orderBook.ce_liquidity} PE:${orderBook.pe_liquidity}` : '—',
             na: orderBook == null,
+        },
+        {
+            pass: oiPass,
+            label: 'OI Buildup',
+            detail: oiAnalysis ? (buildupLabels[oiAnalysis.buildup_signal] || oiAnalysis.buildup_signal) : '—',
+            na: oiAnalysis == null || oiAnalysis.snapshots_count < 5,
+        },
+        {
+            pass: expiryPass,
+            label: 'Expiry Day',
+            detail: isThursday ? (expiryPass ? '0DTE Active' : '0DTE Blocked') : 'Non-expiry',
+            na: false,
         },
     ];
     const intelPass = intelItems.filter(i => !i.na && i.pass === true).length;

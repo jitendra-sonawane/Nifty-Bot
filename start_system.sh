@@ -1,5 +1,15 @@
 #!/bin/bash
 
+# Kill any existing processes on required ports
+for PORT in 8000 5173; do
+    PID=$(lsof -ti :$PORT 2>/dev/null)
+    if [ -n "$PID" ]; then
+        echo "Port $PORT in use (PID $PID) — killing..."
+        kill -9 $PID 2>/dev/null
+        sleep 0.5
+    fi
+done
+
 # Activate virtual environment
 source .venv/bin/activate
 

@@ -200,6 +200,8 @@ export interface TradeRecord {
     pnl: number;
     pnl_pct: number;
     exit_reason: string;
+    trade_type?: 'CREDIT' | 'DEBIT';
+    market_conditions?: { duration_minutes?: number; trade_type?: string; [key: string]: unknown };
     // Legacy single-leg fields (may be present for old trades)
     position_id?: string;
     instrument?: string;

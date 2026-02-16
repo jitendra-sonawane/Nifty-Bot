@@ -415,13 +415,19 @@ def get_option_chain(spot_price: float = 0):
 
 # ─── Paper Trading / Portfolio Endpoints ───────────────────────────────────
 
+_fallback_paper_mgr = None
+
 def _get_paper_mgr():
     """Return the live PaperTradingManager from the bot (single source of truth)."""
+    global _fallback_paper_mgr
     if bot.order_manager and bot.order_manager.paper_manager:
         return bot.order_manager.paper_manager
-    # Fallback: load from file if bot not yet initialized
-    from app.managers.paper_trading import PaperTradingManager
-    return PaperTradingManager()
+    # Fallback: reuse a single instance so state isn't lost between calls
+    if _fallback_paper_mgr is None:
+        from app.managers.paper_trading import PaperTradingManager
+        _fallback_paper_mgr = PaperTradingManager()
+        logger.info(f"Created fallback PaperTradingManager (trades={len(_fallback_paper_mgr.trade_history)})")
+    return _fallback_paper_mgr
 
 
 @app.get("/portfolio")
@@ -815,4 +821,6 @@ def auth_callback(code: str = None):
         return error_html
 
 if __name__ == "__main__":
+    import multiprocessing
+    multiprocessing.set_start_method("fork", force=True)
     uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)

@@ -21,6 +21,7 @@ BASE_URL = "https://api-hft.upstox.com/v2"
 ORDER_PLACE_URL = f"{BASE_URL}/order/place"
 ORDER_MODIFY_URL = f"{BASE_URL}/order/modify"
 ORDER_CANCEL_URL = f"{BASE_URL}/order/cancel"
+MULTI_ORDER_URL = f"{BASE_URL}/order/multi"
 ORDER_HISTORY_URL = "https://api.upstox.com/v2/order/retrieve-all"
 
 
@@ -153,28 +154,79 @@ class SandboxExecutor:
             logger.error(f"Sandbox order error: {e}")
             return None
     
-    def place_multi_order(self, orders: List[Dict]) -> List[Optional[Dict]]:
+    def place_multi_order(self, orders: List[Dict], slice_orders: bool = True) -> Dict:
         """
-        Place multiple orders simultaneously.
-        Uses the multi-order API for atomic execution.
-        
+        Place multiple orders atomically via Upstox multi-order endpoint.
+
         Args:
-            orders: List of order dicts, each with same params as place_order
-        
+            orders: List of order dicts with keys matching place_order params
+            slice_orders: Auto-split orders exceeding exchange freeze limits
+
         Returns:
-            List of results, one per order
+            {"order_ids": [...], "errors": [...], "partial": bool}
         """
         if len(orders) > 25:
             logger.error("Max 25 orders per multi-order request")
-            return [None] * len(orders)
-        
-        results = []
+            return {"order_ids": [], "errors": ["Max 25 orders exceeded"], "partial": False}
+
+        payload = []
         for i, order in enumerate(orders):
-            order["correlation_id"] = f"leg_{i}_{order.get('tag', 'nifty')}"
-            result = self.place_order(**order)
-            results.append(result)
-        
-        return results
+            payload.append({
+                "quantity": order.get("quantity"),
+                "product": order.get("product", "D"),
+                "validity": order.get("validity", "DAY"),
+                "price": order.get("price", 0.0),
+                "tag": order.get("tag", "sandbox_spread"),
+                "slice": slice_orders,
+                "instrument_token": order.get("instrument_token", order.get("instrument_key")),
+                "order_type": order.get("order_type", "MARKET"),
+                "transaction_type": order.get("transaction_type"),
+                "disclosed_quantity": order.get("disclosed_quantity", 0),
+                "trigger_price": order.get("trigger_price", 0.0),
+                "is_amo": order.get("is_amo", False),
+                "correlation_id": order.get("correlation_id", f"leg_{i}_{order.get('tag', 'nifty')}"),
+            })
+
+        try:
+            response = requests.post(
+                MULTI_ORDER_URL,
+                headers=self._headers,
+                json=payload,
+                timeout=10,
+            )
+            result = response.json()
+
+            order_ids = []
+            errors = []
+
+            if response.status_code == 200 and result.get("status") == "success":
+                for item in result.get("data", []):
+                    oid = item.get("order_id", "")
+                    order_ids.append(oid)
+                    self._order_history.append({
+                        "order_id": oid,
+                        "correlation_id": item.get("correlation_id", ""),
+                        "status": OrderStatus.PLACED.value,
+                    })
+            elif response.status_code == 207:
+                # Partial success
+                for item in result.get("data", []):
+                    order_ids.append(item.get("order_id", ""))
+                for err in result.get("errors", []):
+                    errors.append(str(err))
+            else:
+                errors.append(str(result.get("errors", result.get("message", "Unknown error"))))
+
+            partial = len(errors) > 0 and len(order_ids) > 0
+            logger.info(f"Sandbox multi-order: {len(order_ids)} placed, {len(errors)} errors")
+            return {"order_ids": order_ids, "errors": errors, "partial": partial}
+
+        except requests.exceptions.Timeout:
+            logger.error("Sandbox multi-order timeout")
+            return {"order_ids": [], "errors": ["Timeout"], "partial": False}
+        except Exception as e:
+            logger.error(f"Sandbox multi-order error: {e}")
+            return {"order_ids": [], "errors": [str(e)], "partial": False}
     
     def modify_order(
         self,

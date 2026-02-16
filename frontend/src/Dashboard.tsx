@@ -11,6 +11,7 @@ import BottomTabs from './layout/BottomTabs';
 // Market
 import PriceChart from './features/market/PriceChart';
 import NiftyHeatmap from './features/market/NiftyHeatmap';
+import MarketSnapshotDashboard from './features/market/MarketSnapshotDashboard';
 import IndicatorStrip from './features/market/IndicatorStrip';
 
 // Decision Panel
@@ -62,7 +63,7 @@ const Dashboard: React.FC = () => {
     const backendUnavailable = (!status && (isError || skeletonExpired)) || isError;
 
     // Chart view toggle
-    const [chartView, setChartView] = useState<'chart' | 'heatmap'>('chart');
+    const [chartView, setChartView] = useState<'snapshot' | 'chart' | 'heatmap'>('snapshot');
     const { data: heatmapData, isLoading: heatmapLoading } = useStreamNifty50HeatmapQuery(undefined, {
         skip: chartView !== 'heatmap',
     });
@@ -133,6 +134,7 @@ const Dashboard: React.FC = () => {
                     pcrAnalysis={pcrAnalysis}
                     sentiment={sentiment}
                     isRunning={isRunning}
+                    intelligence={intelligence}
                 />
             }
         >
@@ -174,7 +176,7 @@ const Dashboard: React.FC = () => {
                                 textTransform: 'uppercase' as const,
                                 letterSpacing: '0.05em',
                             }}>
-                                {chartView === 'chart' ? 'Nifty 50 Price' : 'Nifty 50 Heatmap'}
+                                {chartView === 'snapshot' ? 'Market Snapshot' : chartView === 'chart' ? 'Nifty 50 Price' : 'Nifty 50 Heatmap'}
                             </span>
                             <div style={{
                                 display: 'flex',
@@ -183,43 +185,43 @@ const Dashboard: React.FC = () => {
                                 borderRadius: 'var(--radius-sm)',
                                 padding: '2px',
                             }}>
-                                <button
-                                    onClick={() => setChartView('chart')}
-                                    style={{
-                                        fontSize: '11px',
-                                        fontWeight: 500,
-                                        padding: '4px 10px',
-                                        border: 'none',
-                                        borderRadius: '4px',
-                                        cursor: 'pointer',
-                                        color: chartView === 'chart' ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                                        background: chartView === 'chart' ? 'var(--bg-elevated)' : 'transparent',
-                                        boxShadow: chartView === 'chart' ? 'var(--shadow-sm)' : 'none',
-                                        transition: 'all 0.15s',
-                                    }}
-                                >
-                                    Chart
-                                </button>
-                                <button
-                                    onClick={() => setChartView('heatmap')}
-                                    style={{
-                                        fontSize: '11px',
-                                        fontWeight: 500,
-                                        padding: '4px 10px',
-                                        border: 'none',
-                                        borderRadius: '4px',
-                                        cursor: 'pointer',
-                                        color: chartView === 'heatmap' ? 'var(--text-primary)' : 'var(--text-tertiary)',
-                                        background: chartView === 'heatmap' ? 'var(--bg-elevated)' : 'transparent',
-                                        boxShadow: chartView === 'heatmap' ? 'var(--shadow-sm)' : 'none',
-                                        transition: 'all 0.15s',
-                                    }}
-                                >
-                                    Heatmap
-                                </button>
+                                {(['snapshot', 'chart', 'heatmap'] as const).map((view) => (
+                                    <button
+                                        key={view}
+                                        onClick={() => setChartView(view)}
+                                        style={{
+                                            fontSize: '11px',
+                                            fontWeight: 500,
+                                            padding: '4px 10px',
+                                            border: 'none',
+                                            borderRadius: '4px',
+                                            cursor: 'pointer',
+                                            color: chartView === view ? 'var(--text-primary)' : 'var(--text-tertiary)',
+                                            background: chartView === view ? 'var(--bg-elevated)' : 'transparent',
+                                            boxShadow: chartView === view ? 'var(--shadow-sm)' : 'none',
+                                            transition: 'all 0.15s',
+                                        }}
+                                    >
+                                        {view === 'snapshot' ? 'Snapshot' : view === 'chart' ? 'Chart' : 'Heatmap'}
+                                    </button>
+                                ))}
                             </div>
                         </div>
-                        {chartView === 'chart' ? (
+                        {chartView === 'snapshot' ? (
+                            <MarketSnapshotDashboard
+                                strategyData={strategyData}
+                                currentPrice={currentPrice}
+                                intelligence={intelligence}
+                                positions={(status as any)?.positions ?? []}
+                                pnl={{
+                                    daily: (status as any)?.paper_daily_pnl ?? (status as any)?.risk_stats?.daily_pnl ?? 0,
+                                    unrealized: (status as any)?.paper_pnl ?? 0,
+                                }}
+                                riskStats={(status as any)?.risk_stats}
+                                signal={signal}
+                                pcrAnalysis={pcrAnalysis}
+                            />
+                        ) : chartView === 'chart' ? (
                             <PriceChart data={priceHistory} height={340} />
                         ) : (
                             <NiftyHeatmap

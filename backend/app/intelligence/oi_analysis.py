@@ -33,15 +33,15 @@ class OIAnalysisModule(IntelligenceModule):
     name = "oi_analysis"
 
     # Minimum snapshots before we start classifying
-    MIN_SNAPSHOTS = 5
-    # Compare current vs N snapshots ago
-    LOOKBACK = 5
+    MIN_SNAPSHOTS = 3
+    # Compare current vs N snapshots ago (12 × 5s = 60 seconds lookback)
+    LOOKBACK = 12
     # Thresholds
-    PRICE_FLAT_PCT = 0.05    # ±0.05% = flat
-    OI_FLAT_PCT = 0.5        # ±0.5% = no meaningful OI change
+    PRICE_FLAT_PCT = 0.03    # ±0.03% = flat (more sensitive)
+    OI_FLAT_PCT = 0.1        # ±0.1% = no meaningful OI change (more sensitive)
 
     def __init__(self):
-        self._snapshots: deque = deque(maxlen=60)  # ~5 min at 5s intervals
+        self._snapshots: deque = deque(maxlen=120)  # ~10 min at 5s intervals
         self._last_snapshot_time: float = 0.0
         self._snapshot_interval: float = 5.0  # seconds between snapshots
 
@@ -63,7 +63,16 @@ class OIAnalysisModule(IntelligenceModule):
         metadata = data.get("pcr_option_metadata")
         price = data.get("current_price")
 
-        if not pcr_oi_data or not metadata or not price:
+        # Use explicit None/empty checks (avoid falsy 0.0 for price)
+        if pcr_oi_data is None or len(pcr_oi_data) == 0:
+            if len(self._snapshots) == 0:
+                logger.debug("OI Analysis: No pcr_oi_data received yet (waiting for WebSocket OI)")
+            return
+        if metadata is None or len(metadata) == 0:
+            logger.debug("OI Analysis: No pcr_option_metadata available")
+            return
+        if price is None or price <= 0:
+            logger.debug(f"OI Analysis: Invalid current_price={price}")
             return
 
         self._current_price = price
@@ -96,6 +105,22 @@ class OIAnalysisModule(IntelligenceModule):
             elif opt_type == "PE":
                 per_strike[strike]["pe_oi"] = oi
                 total_pe_oi += oi
+
+        # Log OI data health on first few snapshots
+        snapshot_count = len(self._snapshots)
+        if snapshot_count < 5:
+            ce_keys = sum(1 for k in pcr_oi_data if metadata.get(k, {}).get("option_type") == "CE" and pcr_oi_data[k] > 0)
+            pe_keys = sum(1 for k in pcr_oi_data if metadata.get(k, {}).get("option_type") == "PE" and pcr_oi_data[k] > 0)
+            logger.info(
+                f"📊 OI Snapshot #{snapshot_count}: CE OI={total_ce_oi:,.0f} ({ce_keys} keys) | "
+                f"PE OI={total_pe_oi:,.0f} ({pe_keys} keys) | Price={price:.2f} | "
+                f"Total pcr_oi_data entries={len(pcr_oi_data)}"
+            )
+            if pe_keys == 0 and ce_keys > 0:
+                logger.warning(
+                    f"⚠️ OI IMBALANCE: CE has {ce_keys} keys with OI but PE has ZERO. "
+                    f"PE OI data may not be arriving from WebSocket feed."
+                )
 
         self._snapshots.append({
             "timestamp": now,
@@ -178,6 +203,15 @@ class OIAnalysisModule(IntelligenceModule):
         price_then = previous["price"]
         if price_then == 0:
             self._buildup_signal = "NEUTRAL"
+            return
+
+        # Guard: Skip classification if previous snapshot had negligible OI
+        # (avoids absurd +100,000% changes from stale/zero initial OI)
+        MIN_OI_THRESHOLD = 1000  # Minimum total OI to consider meaningful
+        prev_total_oi = previous["total_ce_oi"] + previous["total_pe_oi"]
+        if prev_total_oi < MIN_OI_THRESHOLD:
+            self._buildup_signal = "NEUTRAL"
+            logger.debug(f"OI classify skipped: previous total OI={prev_total_oi:.0f} < {MIN_OI_THRESHOLD} threshold")
             return
 
         price_change_pct = ((price_now - price_then) / price_then) * 100

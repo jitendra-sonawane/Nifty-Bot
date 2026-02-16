@@ -191,6 +191,16 @@ class MultiLegPosition:
         return sum(leg.unrealized_pnl for leg in self.legs)
 
     @property
+    def market_value(self) -> float:
+        """Net cash flow to close this position (NLV component).
+        Positive = we'd receive cash, Negative = we'd pay cash."""
+        total = 0.0
+        for leg in self.legs:
+            sign = 1 if leg.transaction_type == TransactionType.BUY else -1
+            total += sign * leg.current_price * leg.quantity
+        return total
+
+    @property
     def net_entry_premium(self) -> float:
         """Net premium at entry. Positive = credit strategy."""
         total = 0.0
@@ -207,6 +217,7 @@ class MultiLegPosition:
         return totals
 
     def to_dict(self) -> dict:
+        net_entry = self.net_entry_premium
         return {
             "position_id": self.position_id,
             "strategy_name": self.strategy_name,
@@ -215,7 +226,9 @@ class MultiLegPosition:
             "exit_time": self.exit_time.isoformat() if self.exit_time else None,
             "is_open": self.is_open,
             "total_unrealized_pnl": round(self.total_unrealized_pnl, 2),
-            "net_entry_premium": round(self.net_entry_premium, 2),
+            "net_entry_premium": round(net_entry, 2),
+            "trade_type": "CREDIT" if net_entry >= 0 else "DEBIT",
+            "market_value": round(self.market_value, 2),
             "max_risk": round(self.max_risk, 2),
             "max_reward": round(self.max_reward, 2),
             "exit_reason": self.exit_reason,
@@ -239,6 +252,10 @@ class TradeRecord:
 
     def to_dict(self) -> dict:
         duration = (self.exit_time - self.entry_time).total_seconds() / 60 if self.exit_time and self.entry_time else 0
+        # Persist market_conditions so it survives save/load round-trips
+        mc = dict(self.market_conditions) if self.market_conditions else {}
+        mc["duration_minutes"] = round(duration, 1)
+        trade_type = mc.get("trade_type", "DEBIT")
         return {
             "trade_id": self.trade_id,
             "strategy_name": self.strategy_name,
@@ -250,6 +267,8 @@ class TradeRecord:
             "pnl": round(self.pnl, 2),
             "pnl_pct": round(self.pnl_pct, 2),
             "exit_reason": self.exit_reason,
+            "trade_type": trade_type,
+            "market_conditions": mc,
             "duration_minutes": round(duration, 1),
         }
 
@@ -340,6 +359,8 @@ class OptionChainEntry:
     pe_greeks: Optional[Greeks] = None
     ce_instrument_key: str = ""
     pe_instrument_key: str = ""
+    ce_pop: float = 0.0  # Probability of Profit (from Upstox API)
+    pe_pop: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -354,4 +375,6 @@ class OptionChainEntry:
             "pe_iv": round(self.pe_iv, 2),
             "ce_instrument_key": self.ce_instrument_key,
             "pe_instrument_key": self.pe_instrument_key,
+            "ce_pop": round(self.ce_pop, 1),
+            "pe_pop": round(self.pe_pop, 1),
         }

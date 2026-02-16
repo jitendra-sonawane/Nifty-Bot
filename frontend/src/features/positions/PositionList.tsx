@@ -91,7 +91,7 @@ const PositionList: React.FC<PositionListProps> = React.memo(({ status, closePos
                     <div className="flex justify-between text-[11px]">
                         <span className="text-[var(--text-tertiary)]">Daily P&L</span>
                         <span className={`mono font-semibold ${riskStats.daily_pnl >= 0 ? 'profit' : 'loss'}`}>
-                            ₹{riskStats.daily_pnl.toFixed(1)}
+                            {riskStats.daily_pnl >= 0 ? '+' : ''}₹{riskStats.daily_pnl.toFixed(1)}
                         </span>
                     </div>
                     <div className="flex justify-between text-[11px]">

@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import type { IntelligenceContext } from '../types/api';
 
 interface MarketOverviewBarProps {
     strategyData?: any;
@@ -6,6 +7,7 @@ interface MarketOverviewBarProps {
     pcrAnalysis?: any;
     sentiment?: any;
     isRunning: boolean;
+    intelligence?: IntelligenceContext;
 }
 
 interface MetricPill {
@@ -14,12 +16,21 @@ interface MetricPill {
     valueColor: string;
 }
 
+const buildupShort: Record<string, { text: string; color: string }> = {
+    LONG_BUILDUP:   { text: 'LB', color: 'var(--color-profit-text)' },
+    SHORT_COVERING: { text: 'SC', color: 'var(--color-profit-text)' },
+    SHORT_BUILDUP:  { text: 'SB', color: 'var(--color-loss-text)' },
+    LONG_UNWINDING: { text: 'LU', color: 'var(--color-loss-text)' },
+    NEUTRAL:        { text: '--', color: 'var(--text-muted)' },
+};
+
 const MarketOverviewBar: React.FC<MarketOverviewBarProps> = React.memo(({
     strategyData,
     currentPrice,
     pcrAnalysis,
     sentiment,
     isRunning,
+    intelligence,
 }) => {
     const pills = useMemo<MetricPill[]>(() => {
         const result: MetricPill[] = [];
@@ -88,6 +99,41 @@ const MarketOverviewBar: React.FC<MarketOverviewBarProps> = React.memo(({
             });
         }
 
+        // IV Rank
+        const ivRankData = intelligence?.iv_rank;
+        if (ivRankData?.iv_rank != null) {
+            const ivr = ivRankData.iv_rank;
+            result.push({
+                label: 'IVR',
+                value: `${ivr.toFixed(0)}%`,
+                valueColor: ivr >= 50
+                    ? 'var(--color-profit-text)'
+                    : ivr < 20
+                        ? 'var(--color-loss-text)'
+                        : 'var(--color-warning)',
+            });
+        }
+
+        // OI Buildup
+        const oiData = intelligence?.oi_analysis;
+        if (oiData && oiData.snapshots_count >= 3) {
+            const b = buildupShort[oiData.buildup_signal] || buildupShort.NEUTRAL;
+            result.push({
+                label: 'OI',
+                value: b.text,
+                valueColor: b.color,
+            });
+        }
+
+        // Max Pain
+        if (oiData?.max_pain_strike) {
+            result.push({
+                label: 'MPAIN',
+                value: oiData.max_pain_strike.toFixed(0),
+                valueColor: 'var(--accent-purple)',
+            });
+        }
+
         // Volume ratio
         const volRatio = strategyData?.volume_ratio;
         if (volRatio != null) {
@@ -95,6 +141,16 @@ const MarketOverviewBar: React.FC<MarketOverviewBarProps> = React.memo(({
                 label: 'VOL',
                 value: Number(volRatio).toFixed(1) + 'x',
                 valueColor: volRatio >= 1.5 ? 'var(--accent-cyan)' : 'var(--text-secondary)',
+            });
+        }
+
+        // Expiry Day
+        const isExpiry = new Date().getDay() === 4; // Thursday
+        if (isExpiry) {
+            result.push({
+                label: '0DTE',
+                value: 'EXPIRY',
+                valueColor: 'var(--color-warning)',
             });
         }
 
@@ -106,7 +162,7 @@ const MarketOverviewBar: React.FC<MarketOverviewBarProps> = React.memo(({
         });
 
         return result;
-    }, [strategyData, currentPrice, pcrAnalysis, sentiment, isRunning]);
+    }, [strategyData, currentPrice, pcrAnalysis, sentiment, isRunning, intelligence]);
 
     if (pills.length === 0) return null;
 

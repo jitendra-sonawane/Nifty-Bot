@@ -47,8 +47,10 @@ class PaperTradingManager:
     - CSV trade journal for ML training
     """
 
-    SAVE_FILE = "paper_trading_state.json"
-    CSV_FILE  = "trade_journal.csv"
+    # Use absolute path relative to this file so it's consistent regardless of CWD
+    _DATA_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    SAVE_FILE = os.path.join(_DATA_DIR, "paper_trading_state.json")
+    CSV_FILE  = os.path.join(_DATA_DIR, "trade_journal.csv")
 
     def __init__(self, initial_capital: float = None):
         self.initial_capital = initial_capital or Config.INITIAL_CAPITAL
@@ -122,9 +124,10 @@ class PaperTradingManager:
 
         self.positions[position_id] = position
 
-        # Deduct debit premium from balance (credit strategies don't touch balance until close)
-        if net_premium < 0:
-            self.balance += net_premium  # net_premium is negative for debit
+        # Adjust balance by net premium cash flow:
+        #   Credit strategy (net_premium > 0): balance increases (premium received)
+        #   Debit strategy  (net_premium < 0): balance decreases (premium paid)
+        self.balance += net_premium
 
         logger.info(
             f"📂 Position Opened: {signal.strategy_name} | "
@@ -190,14 +193,14 @@ class PaperTradingManager:
 
         # Calculate final P&L
         pnl = position.total_unrealized_pnl
-        entry_premium = abs(position.net_entry_premium)
+        net_entry = position.net_entry_premium  # signed: +credit, -debit
+        entry_premium = abs(net_entry)
 
-        # Exit premium: what we receive/pay to close each leg
+        # Exit premium: cash flow to close each leg
+        # BUY leg → SELL to close (receive cash → positive)
+        # SELL leg → BUY to close (pay cash → negative)
         exit_premium = 0
         for leg in position.legs:
-            # To close: reverse the original transaction
-            # If originally SOLD, we BUY back (cost) → negative flow
-            # If originally BOUGHT, we SELL (receive) → positive flow
             sign = 1 if leg.transaction_type == TransactionType.BUY else -1
             exit_premium += sign * leg.current_price * leg.quantity
 
@@ -213,6 +216,9 @@ class PaperTradingManager:
             d["exit_price"] = round(leg.current_price, 2)
             legs_snapshot.append(d)
 
+        # Determine trade type for display context
+        trade_type = "CREDIT" if net_entry >= 0 else "DEBIT"
+
         # Create trade record
         trade = TradeRecord(
             trade_id=position_id,
@@ -225,14 +231,21 @@ class PaperTradingManager:
             pnl=round(pnl, 2),
             pnl_pct=round(pnl_pct, 2),
             exit_reason=exit_reason,
-            market_conditions={"duration_minutes": round(duration, 1)},
+            market_conditions={
+                "duration_minutes": round(duration, 1),
+                "trade_type": trade_type,
+                "net_entry_premium": round(net_entry, 2),
+            },
         )
 
         self.trade_history.append(trade)
         self._append_trade_to_csv(trade)
 
-        # Update balance (realise P&L)
-        self.balance += pnl
+        # Update balance with exit cash flow.
+        # At open we did: balance += net_entry_premium (cash received/paid).
+        # At close we add: exit_premium (cash received/paid to close).
+        # Net balance change = net_entry + exit_premium = P&L ✓
+        self.balance += exit_premium
         self.session_pnl += pnl
 
         # Remove from active positions
@@ -293,15 +306,18 @@ class PaperTradingManager:
                 market_conditions={
                     "duration_minutes": round(
                         (exit_dt - entry_dt).total_seconds() / 60, 1
-                    )
+                    ),
+                    "trade_type": "DEBIT",
                 },
             )
 
             self.trade_history.append(trade)
             self._append_trade_to_csv(trade)
 
-            # Reflect realized P&L in balance & session P&L
-            self.balance += pnl
+            # place_order() deducted entry_cost at open.
+            # At close, add back exit proceeds = entry_cost + pnl.
+            exit_proceeds = exit_price * quantity
+            self.balance += exit_proceeds
             self.session_pnl += pnl
 
             self._save_state()
@@ -323,15 +339,20 @@ class PaperTradingManager:
         """Get a specific position."""
         return self.positions.get(position_id)
 
-    def get_trade_history(self, strategy: str = None, limit: int = 50) -> List[dict]:
-        """Get completed trade history, optionally filtered by strategy."""
+    def get_trade_history(self, strategy: str = None, limit: int = 0) -> List[dict]:
+        """Get completed trade history, optionally filtered by strategy.
+
+        Args:
+            strategy: Filter by strategy name (optional)
+            limit: Max trades to return. 0 means all trades.
+        """
         trades = self.trade_history
         if strategy:
             trades = [t for t in trades if t.strategy_name == strategy]
 
         # Most recent first
         trades = sorted(trades, key=lambda t: t.exit_time, reverse=True)
-        return [t.to_dict() for t in trades[:limit]]
+        return [t.to_dict() for t in trades] if limit <= 0 else [t.to_dict() for t in trades[:limit]]
 
     def get_strategy_analytics(self) -> Dict[str, dict]:
         """Get per-strategy performance breakdown."""
@@ -365,6 +386,8 @@ class PaperTradingManager:
     def get_portfolio_stats(self) -> dict:
         """Get overall portfolio statistics."""
         open_pnl = sum(p.total_unrealized_pnl for p in self.positions.values() if p.is_open)
+        # Market value of open positions = what we'd receive/pay to close
+        position_mkt_value = sum(p.market_value for p in self.positions.values() if p.is_open)
         realized_pnl = sum(t.pnl for t in self.trade_history)
 
         total_trades = len(self.trade_history)
@@ -375,15 +398,18 @@ class PaperTradingManager:
         wins_pnl = [p for p in all_pnls if p > 0]
         loss_pnl = [p for p in all_pnls if p < 0]
 
+        # Equity = cash + position liquidation value (NLV)
+        total_equity = self.balance + position_mkt_value
+
         return {
             "initial_capital": self.initial_capital,
             "current_balance": round(self.balance, 2),
-            "total_equity": round(self.balance + open_pnl, 2),
+            "total_equity": round(total_equity, 2),
             "unrealized_pnl": round(open_pnl, 2),
             "realized_pnl": round(realized_pnl, 2),
             "session_pnl": round(self.session_pnl, 2),
             "total_return_pct": round(
-                (self.balance + open_pnl - self.initial_capital) / self.initial_capital * 100, 2
+                (total_equity - self.initial_capital) / self.initial_capital * 100, 2
             ),
             "open_positions": len([p for p in self.positions.values() if p.is_open]),
             "total_trades": total_trades,

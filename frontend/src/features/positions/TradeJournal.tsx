@@ -106,6 +106,15 @@ const TradeJournal: React.FC<Props> = React.memo(({ trades }) => {
                                                 {legs.length}L
                                             </span>
                                         )}
+                                        {(trade as any).trade_type && (
+                                            <span className={`text-[9px] px-1 rounded font-medium ${
+                                                (trade as any).trade_type === 'CREDIT'
+                                                    ? 'bg-[rgba(34,197,94,0.1)] text-[var(--color-profit-text)]'
+                                                    : 'bg-[rgba(239,68,68,0.1)] text-[var(--color-loss-text)]'
+                                            }`}>
+                                                {(trade as any).trade_type}
+                                            </span>
+                                        )}
                                     </div>
                                     <span className={`mono font-bold ${pnlClass(trade.pnl)}`}>
                                         {trade.pnl >= 0 ? '+' : ''}₹{fmt(trade.pnl)} ({trade.pnl_pct >= 0 ? '+' : ''}{fmt(trade.pnl_pct)}%)
@@ -120,9 +129,13 @@ const TradeJournal: React.FC<Props> = React.memo(({ trades }) => {
 
                                 {/* Premiums */}
                                 <div className="flex items-center gap-3 mt-1 text-[10px] mono text-[var(--text-tertiary)]">
-                                    <span>Entry ₹{fmt(trade.entry_premium)}</span>
+                                    <span>
+                                        Entry {(trade as any).trade_type === 'CREDIT' ? '+' : '-'}₹{fmt(trade.entry_premium)}
+                                    </span>
                                     <span>→</span>
-                                    <span>Exit ₹{fmt(trade.exit_premium)}</span>
+                                    <span>
+                                        Exit {(trade as any).trade_type === 'CREDIT' ? '-' : '+'}₹{fmt(trade.exit_premium)}
+                                    </span>
                                 </div>
 
                                 {/* Legs summary */}
