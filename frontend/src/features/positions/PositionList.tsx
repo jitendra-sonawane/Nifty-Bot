@@ -26,15 +26,15 @@ const PositionList: React.FC<PositionListProps> = React.memo(({ status, closePos
             {/* Open Positions */}
             {positions && positions.length > 0 ? (
                 <div className="space-y-1.5">
-                    {positions.map((pos) => {
+                    {positions.map((pos, index) => {
                         const optionPrice = pos.current_price ?? pos.entry_price;
                         const pnl = pos.unrealized_pnl ?? (optionPrice - pos.entry_price) * pos.quantity;
-                        const pnlPct = pos.unrealized_pnl_pct ?? ((optionPrice - pos.entry_price) / pos.entry_price) * 100;
+                        const pnlPct = (pos.unrealized_pnl_pct !== undefined && pos.unrealized_pnl_pct !== null) ? pos.unrealized_pnl_pct : (((optionPrice - pos.entry_price) / (pos.entry_price || 1)) * 100);
                         const isProfit = pnl >= 0;
 
                         return (
                             <div
-                                key={pos.id}
+                                key={pos.id ? `${pos.id}` : `pos-${index}`}
                                 className={`flex items-center justify-between p-2 rounded-md border ${isProfit
                                     ? 'bg-[var(--color-profit-muted)] border-[rgba(34,197,94,0.15)]'
                                     : 'bg-[var(--color-loss-muted)] border-[rgba(239,68,68,0.15)]'
@@ -50,20 +50,20 @@ const PositionList: React.FC<PositionListProps> = React.memo(({ status, closePos
                                         </span>
                                     </div>
                                     <div className="flex items-center gap-3 text-[10px] mono">
-                                        <span className="text-[var(--text-tertiary)]">Entry: ₹{pos.entry_price.toFixed(1)}</span>
-                                        <span className="text-[var(--text-primary)] font-medium">LTP: ₹{optionPrice.toFixed(1)}</span>
-                                        <span className="text-[var(--color-loss-text)]">SL ₹{pos.stop_loss.toFixed(1)}</span>
-                                        <span className="text-[var(--color-profit-text)]">TP ₹{pos.target.toFixed(1)}</span>
+                                        <span className="text-[var(--text-tertiary)]">Entry: ₹{(pos.entry_price || 0).toFixed(1)}</span>
+                                        <span className="text-[var(--text-primary)] font-medium">LTP: ₹{(optionPrice || 0).toFixed(1)}</span>
+                                        <span className="text-[var(--color-loss-text)]">SL ₹{(pos.stop_loss || 0).toFixed(1)}</span>
+                                        <span className="text-[var(--color-profit-text)]">TP ₹{(pos.target || 0).toFixed(1)}</span>
                                     </div>
                                 </div>
 
                                 <div className="flex items-center gap-2 flex-shrink-0">
                                     <div className="text-right">
                                         <div className={`mono text-xs font-bold ${isProfit ? 'profit' : 'loss'}`}>
-                                            {isProfit ? '+' : ''}₹{pnl.toFixed(1)}
+                                            {isProfit ? '+' : ''}₹{(pnl || 0).toFixed(1)}
                                         </div>
                                         <div className={`mono text-[10px] ${isProfit ? 'profit' : 'loss'}`}>
-                                            {pnlPct.toFixed(1)}%
+                                            {(pnlPct || 0).toFixed(1)}%
                                         </div>
                                     </div>
                                     <button

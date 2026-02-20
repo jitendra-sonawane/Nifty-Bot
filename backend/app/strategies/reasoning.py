@@ -250,8 +250,10 @@ class TradingReasoning:
             f"🔢 RSI: {rsi:.1f} (In neutral zone 35-65)",
         ]
         
+        failing_text = " Failed checks: " + ", ".join(failing_reasons) + "." if failing_reasons else ""
         trade_rationale = (
-            f"Market is in a consolidation phase with mixed signals. "
+            f"Market is in a consolidation phase with mixed signals."
+            f"{failing_text} "
             f"The alignment of multiple indicators is not strong enough to justify an entry. "
             f"RSI at {rsi:.1f} suggests indecision between buyers and sellers."
         )

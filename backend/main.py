@@ -366,6 +366,7 @@ class TradingBot:
             "filters": strategy_data.get("filters", {}),
             "volume_ratio": strategy_data.get("volume_ratio", 0),
             "atr_pct": strategy_data.get("atr_pct", 0),
+            "pcr": strategy_data.get("pcr"),
             "progress": strategy_data.get("progress", None),
             "pdh_pdl_pdc": strategy_data.get("pdh_pdl_pdc"),
         }
@@ -422,7 +423,7 @@ class TradingBot:
             "market_state": market_state,
             "strategy_data": complete_strategy_data,
             "reasoning": self.strategy_runner.latest_reasoning if self.strategy_runner else {},
-            "decision_reason": strategy_data.get("decision_reason", "Analyzing..."),
+            "decision_reason": strategy_data.get("reason", "Analyzing..."),
             "target_contract": self.strategy_runner.target_contract if self.strategy_runner else None,
             "trading_mode": self.order_manager.trading_mode if self.order_manager else "PAPER",
             "sentiment": market_state.get("sentiment", {}),

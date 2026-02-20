@@ -581,6 +581,8 @@ class StrategyEngine:
         # 1. Supertrend (evaluated in final decision)
         filter_checks['supertrend'] = True
 
+        dominant_direction = "BULLISH" if supertrend else "BEARISH"
+
         # 2. EMA crossover
         ema_bullish = ema_bearish = False
         if len(df) >= 2:
@@ -595,12 +597,13 @@ class StrategyEngine:
         else:
             ema_bullish = ema_5 > ema_20
             ema_bearish = ema_5 < ema_20
-        filter_checks['ema_crossover'] = (ema_bullish or ema_5 > ema_20) or (ema_bearish or ema_5 < ema_20) if ema_5 != ema_20 else False
+        
+        filter_checks['ema_crossover'] = (ema_bullish or ema_5 > ema_20) if dominant_direction == "BULLISH" else (ema_bearish or ema_5 < ema_20)
 
         # 3. RSI
         bullish_rsi = rsi > 55
         bearish_rsi = rsi < 45
-        filter_checks['rsi'] = bullish_rsi or bearish_rsi
+        filter_checks['rsi'] = bullish_rsi if dominant_direction == "BULLISH" else bearish_rsi
 
         # 4. Volatility
         atr_range    = current_atr / current_price * 100
@@ -611,24 +614,30 @@ class StrategyEngine:
         filter_checks['entry_confirmation'] = supertrend_confirmed
 
         # 6. PCR
-        pcr_bullish = pcr_bearish = True
-        if not backtest_mode and pcr:
+        pcr_bullish = pcr_bearish = False
+        if not backtest_mode and pcr is not None:
             pcr_bullish = pcr >= 1.0
             pcr_bearish = pcr <  1.0
-            filter_checks['pcr'] = pcr_bullish or pcr_bearish
-        else:
+            filter_checks['pcr'] = pcr_bullish if dominant_direction == "BULLISH" else pcr_bearish
+        elif backtest_mode:
+            pcr_bullish = pcr_bearish = True
             filter_checks['pcr'] = True
+        else:
+            filter_checks['pcr'] = False # Missing in live mode = blocking
 
         # 7. Greeks quality
-        greeks_bullish = greeks_bearish = True
-        if not backtest_mode and greeks:
+        greeks_bullish = greeks_bearish = False
+        if not backtest_mode and greeks is not None:
             ce_quality = greeks.get('ce', {}).get('quality_score', 0)
             pe_quality = greeks.get('pe', {}).get('quality_score', 0)
             greeks_bullish = ce_quality >= 50
             greeks_bearish = pe_quality >= 50
-            filter_checks['greeks'] = greeks_bullish or greeks_bearish
-        else:
+            filter_checks['greeks'] = greeks_bullish if dominant_direction == "BULLISH" else greeks_bearish
+        elif backtest_mode:
+            greeks_bullish = greeks_bearish = True
             filter_checks['greeks'] = True
+        else:
+            filter_checks['greeks'] = False
 
         # ── Intelligence filters (only evaluated if context provided) ───────
         intelligence_filter_reasons: Dict[str, str] = {}
@@ -679,9 +688,9 @@ class StrategyEngine:
         if not backtest_mode and intelligence_filter_reasons:
             # Per-filter display: each filter shows its own pass/fail status
             def _filter_ok(key: str) -> bool:
-                ce = intelligence_filter_reasons.get("BUY_CE", {}).get(key, (True, ""))[0]
-                pe = intelligence_filter_reasons.get("BUY_PE", {}).get(key, (True, ""))[0]
-                return ce or pe
+                direction_key = "BUY_CE" if dominant_direction == "BULLISH" else "BUY_PE"
+                passes, _ = intelligence_filter_reasons.get(direction_key, {}).get(key, (True, ""))
+                return passes
             filter_checks['market_regime']  = _filter_ok('market_regime')
             filter_checks['iv_rank']        = _filter_ok('iv_rank')
             filter_checks['market_breadth'] = _filter_ok('market_breadth')
@@ -735,7 +744,7 @@ class StrategyEngine:
             if not (ema_bullish or ema_bearish): reasons.append("EMA✗")
             if not volatility_ok:    reasons.append("ATR✗")
             if not supertrend_confirmed: reasons.append("NoConfirm")
-            if not (pcr_bullish or pcr_bearish): reasons.append(f"PCR({pcr:.2f})" if pcr else "PCR✗")
+            if not filter_checks['pcr']: reasons.append(f"PCR({pcr:.2f})" if pcr is not None else "PCR✗")
 
             # Append intelligence block reasons
             for direction in ("BUY_CE", "BUY_PE"):

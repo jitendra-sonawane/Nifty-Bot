@@ -50,7 +50,8 @@ function deriveStages(data: any): PipelineStage[] {
     const confirmPassed = filters.entry_confirmation ?? false;
 
     // 5. SENTIMENT — PCR + Greeks
-    const pcrPassed = filters.pcr ?? false;
+    const isPcrAligned = (isBullish && pcr >= 1.0) || (isBearish && pcr < 1.0);
+    const pcrPassed = pcr != null ? isPcrAligned : false;
     const greeksPassed = filters.greeks ?? false;
     const sentimentPassed = pcrPassed && greeksPassed;
     const sentimentPartial = pcrPassed || greeksPassed;
@@ -94,14 +95,18 @@ function deriveStages(data: any): PipelineStage[] {
             icon: sentimentPassed ? '✓' : sentimentPartial ? '~' : '—',
             status: sentimentPassed ? 'passed' : sentimentPartial ? 'partial' : 'failed',
             detail: `PCR ${pcr?.toFixed?.(2) || '—'}`,
-            value: sentimentPassed ? 'Aligned' : getMissingSentiment(pcrPassed, greeksPassed),
+            value: sentimentPassed ? 'Aligned' : getMissingSentiment(pcrPassed, greeksPassed, pcr),
         },
     ];
 }
 
-function getMissingSentiment(pcr: boolean, greeks: boolean): string {
-    if (!pcr && !greeks) return 'Need PCR + Greeks';
-    if (!pcr) return 'Need PCR';
+function getMissingSentiment(pcrPassed: boolean, greeksPassed: boolean, pcrValue?: number): string {
+    if (!pcrPassed && !greeksPassed) {
+        return pcrValue != null ? 'Opposing Sentiment' : 'Need PCR + Greeks';
+    }
+    if (!pcrPassed) {
+        return pcrValue != null ? 'PCR Not Aligned' : 'Need PCR';
+    }
     return 'Need Greeks';
 }
 
