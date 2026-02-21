@@ -615,8 +615,30 @@ class StrategyEngine:
         else:
             ema_bullish = ema_5 > ema_20
             ema_bearish = ema_5 < ema_20
-        
-        filter_checks['ema_crossover'] = (ema_bullish or ema_5 > ema_20) if dominant_direction == "BULLISH" else (ema_bearish or ema_5 < ema_20)
+
+        # Apply EMA filter based on configured mode
+        from app.core.config import Config
+        ema_mode = getattr(Config, 'EMA_FILTER_MODE', 'trend')
+
+        if ema_mode == "crossover":
+            # Strict: only pass on actual crossover (within last 2 candles)
+            if len(df) >= 3:
+                prev2_ema_5 = df['ema_5'].iloc[-3] if pd.notna(df['ema_5'].iloc[-3]) else None
+                prev2_ema_20 = df['ema_20'].iloc[-3] if pd.notna(df['ema_20'].iloc[-3]) else None
+                recent_bullish_cross = ema_bullish or (
+                    prev2_ema_5 is not None and prev2_ema_20 is not None and
+                    prev2_ema_5 <= prev2_ema_20 and prev_ema_5 > prev_ema_20
+                )
+                recent_bearish_cross = ema_bearish or (
+                    prev2_ema_5 is not None and prev2_ema_20 is not None and
+                    prev2_ema_5 >= prev2_ema_20 and prev_ema_5 < prev_ema_20
+                )
+                filter_checks['ema_crossover'] = recent_bullish_cross if dominant_direction == "BULLISH" else recent_bearish_cross
+            else:
+                filter_checks['ema_crossover'] = ema_bullish if dominant_direction == "BULLISH" else ema_bearish
+        else:
+            # Trend mode (default): pass when short EMA on correct side of long EMA
+            filter_checks['ema_crossover'] = (ema_bullish or ema_5 > ema_20) if dominant_direction == "BULLISH" else (ema_bearish or ema_5 < ema_20)
 
         # 3. RSI
         bullish_rsi = rsi > 55

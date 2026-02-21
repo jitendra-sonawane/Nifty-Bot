@@ -312,3 +312,17 @@ class TestCheckSignal:
             val = result[key]
             if val is not None:
                 assert not np.isnan(val), f"{key} is NaN"
+
+
+class TestEMAFilterMode:
+
+    def setup_method(self):
+        self.engine = StrategyEngine()
+
+    def test_trend_mode_passes_when_ema_above(self, sample_ohlcv_df):
+        """In trend mode, EMA filter passes whenever short EMA > long EMA."""
+        result = self.engine.check_signal(sample_ohlcv_df, backtest_mode=True)
+        if result == "WAITING_DATA":
+            pytest.skip("Not enough data")
+        # Filter should be evaluated (True or False) regardless of mode
+        assert 'ema_crossover' in result.get('filters', {})

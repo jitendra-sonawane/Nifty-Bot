@@ -39,7 +39,11 @@ class Config:
     RSI_PERIOD = 14
     RSI_OVERBOUGHT = 55
     RSI_OVERSOLD = 45
-    
+
+    # EMA filter mode: "trend" = passes when EMA_5 > EMA_20 (default)
+    #                  "crossover" = passes only on actual crossover + 2 candle confirmation
+    EMA_FILTER_MODE = "trend"
+
     # ── Risk Management ───────────────────────────────────────────────
     TARGET_RATIO = 2.0
     STOP_LOSS_PERCENT = 0.10
