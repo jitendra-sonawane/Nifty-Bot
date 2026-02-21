@@ -69,31 +69,34 @@ class TestGetSentiment:
     def setup_method(self):
         self.calc = PCRCalculator()
 
-    def test_extreme_bearish(self):
-        assert self.calc.get_sentiment(2.0) == "EXTREME_BEARISH"
-        assert self.calc.get_sentiment(1.5) == "EXTREME_BEARISH"
-
-    def test_bearish(self):
-        assert self.calc.get_sentiment(1.2) == "BEARISH"
-        assert self.calc.get_sentiment(1.0) == "BEARISH"
+    def test_extreme_bullish(self):
+        """PCR >= 1.5: Heavy put writing = contrarian EXTREME_BULLISH."""
+        assert self.calc.get_sentiment(2.0) == "EXTREME_BULLISH"
+        assert self.calc.get_sentiment(1.5) == "EXTREME_BULLISH"
 
     def test_bullish(self):
-        assert self.calc.get_sentiment(0.7) == "BULLISH"
+        """PCR 1.0-1.5: More puts than calls = contrarian BULLISH."""
+        assert self.calc.get_sentiment(1.2) == "BULLISH"
+        assert self.calc.get_sentiment(1.0) == "BULLISH"
 
-    def test_extreme_bullish(self):
-        assert self.calc.get_sentiment(0.3) == "EXTREME_BULLISH"
-        assert self.calc.get_sentiment(0.5) == "EXTREME_BULLISH"
+    def test_bearish(self):
+        """PCR 0.5-1.0: More calls than puts = contrarian BEARISH."""
+        assert self.calc.get_sentiment(0.7) == "BEARISH"
+
+    def test_extreme_bearish(self):
+        """PCR <= 0.5: Heavy call writing = contrarian EXTREME_BEARISH."""
+        assert self.calc.get_sentiment(0.3) == "EXTREME_BEARISH"
+        assert self.calc.get_sentiment(0.5) == "EXTREME_BEARISH"
 
     def test_none_pcr(self):
         assert self.calc.get_sentiment(None) == "UNKNOWN"
 
     def test_neutral_not_reachable(self):
-        """With BEARISH_THRESHOLD == BULLISH_THRESHOLD == 1.0, neutral requires pcr > 1.0 AND pcr < 1.0 (impossible).
-        Actually per code: pcr > 1.0 is BEARISH or EXTREME_BEARISH, pcr < 1.0 is BULLISH.
-        pcr == 1.0 falls into BEARISH. So NEUTRAL is never returned with equal thresholds."""
-        # PCR must be strictly > BULLISH_THRESHOLD (1.0) to not be BULLISH,
-        # but >= BEARISH_THRESHOLD (1.0) makes it BEARISH. So 1.0 is BEARISH.
-        assert self.calc.get_sentiment(1.0) == "BEARISH"
+        """With BEARISH_THRESHOLD == BULLISH_THRESHOLD == 1.0, neutral is never returned.
+        Contrarian view: pcr >= 1.0 is BULLISH (or EXTREME_BULLISH if >= 1.5).
+        pcr < 1.0 is BEARISH (or EXTREME_BEARISH if <= 0.5).
+        pcr == 1.0 falls into BULLISH. So NEUTRAL is never returned with equal thresholds."""
+        assert self.calc.get_sentiment(1.0) == "BULLISH"
 
 
 class TestSignalChecks:
@@ -103,14 +106,16 @@ class TestSignalChecks:
         self.calc = PCRCalculator()
 
     def test_is_bullish(self):
-        assert self.calc.is_bullish_signal(0.7) is True
+        """Contrarian: PCR > 1.0 (heavy puts = support) is bullish."""
+        assert self.calc.is_bullish_signal(1.5) is True
         assert self.calc.is_bullish_signal(1.0) is False
-        assert self.calc.is_bullish_signal(1.5) is False
+        assert self.calc.is_bullish_signal(0.7) is False
 
     def test_is_bearish(self):
-        assert self.calc.is_bearish_signal(1.5) is True
+        """Contrarian: PCR < 1.0 (heavy calls = resistance) is bearish."""
+        assert self.calc.is_bearish_signal(0.5) is True
         assert self.calc.is_bearish_signal(1.0) is False
-        assert self.calc.is_bearish_signal(0.5) is False
+        assert self.calc.is_bearish_signal(1.5) is False
 
     def test_is_extreme(self):
         assert self.calc.is_extreme_signal(2.0) is True
@@ -192,17 +197,19 @@ class TestPCRAnalysis:
         assert result['is_bullish'] is False
         assert result['is_bearish'] is False
 
-    def test_analysis_bearish(self):
-        result = self.calc.get_pcr_analysis(1.3, 1300, 1000)
-        assert result['sentiment'] == 'BEARISH'
-        assert result['is_bearish'] is True
-        assert result['is_bullish'] is False
-        assert result['pcr'] == 1.3
-
     def test_analysis_bullish(self):
-        result = self.calc.get_pcr_analysis(0.7, 700, 1000)
+        """Contrarian: PCR 1.3 (more puts) = BULLISH."""
+        result = self.calc.get_pcr_analysis(1.3, 1300, 1000)
         assert result['sentiment'] == 'BULLISH'
         assert result['is_bullish'] is True
+        assert result['is_bearish'] is False
+        assert result['pcr'] == 1.3
+
+    def test_analysis_bearish(self):
+        """Contrarian: PCR 0.7 (more calls) = BEARISH."""
+        result = self.calc.get_pcr_analysis(0.7, 700, 1000)
+        assert result['sentiment'] == 'BEARISH'
+        assert result['is_bearish'] is True
 
     def test_analysis_has_all_keys(self):
         result = self.calc.get_pcr_analysis(1.0, 1000, 1000)

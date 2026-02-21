@@ -3,12 +3,18 @@ Put-Call Ratio (PCR) Calculator for options sentiment analysis.
 
 PCR = Total Put Open Interest / Total Call Open Interest
 
-Interpretation:
-- PCR > 1.5: Extreme bearish sentiment (potential reversal - market oversold)
-- PCR > 1.0: Bearish sentiment (more puts than calls)
-- PCR ≈ 1.0: Neutral sentiment (balanced)
-- PCR < 1.0: Bullish sentiment (more calls than puts)
-- PCR < 0.5: Extreme bullish sentiment (potential reversal - market overbought)
+Contrarian Interpretation (used by this system):
+- PCR > 1.5: Heavy put writing = strong support building = BULLISH
+  (Extreme fear often precedes reversals upward)
+- PCR 1.0-1.5: More puts than calls = moderate support = BULLISH
+- PCR ~ 1.0: Balanced put-call activity = NEUTRAL
+- PCR 0.5-1.0: More calls than puts = resistance building = BEARISH
+- PCR < 0.5: Heavy call writing = strong resistance = BEARISH
+  (Extreme greed often precedes reversals downward)
+
+Note: This is the CONTRARIAN view. Raw sentiment is the opposite
+(high PCR = bearish sentiment), but markets tend to reverse at
+extremes, making the contrarian view more useful for trading.
 """
 
 from collections import deque
@@ -232,7 +238,7 @@ class PCRCalculator:
         trend = self.get_pcr_trend()
         
         # Generate interpretation
-        interpretation = self._get_interpretation(pcr, sentiment, trend)
+        interpretation = self._get_interpretation(pcr, None, sentiment, trend)
         
         return {
             'pcr': pcr,
@@ -248,23 +254,29 @@ class PCRCalculator:
             'timestamp': datetime.now().isoformat()
         }
     
-    def _get_interpretation(self, pcr: float, sentiment: str, trend: Optional[str]) -> str:
-        """Generate human-readable interpretation of PCR."""
+    def _get_interpretation(self, week_pcr: float, intraday_pcr: Optional[float], sentiment: str, trend: Optional[str]) -> str:
+        """Generate human-readable interpretation of PCR (contrarian view)."""
         interpretations = {
-            "EXTREME_BEARISH": "Extreme bearish sentiment - potential reversal signal (market oversold)",
-            "BEARISH": "Bearish sentiment - more puts than calls",
-            "NEUTRAL": "Neutral sentiment - balanced put-call activity",
-            "BULLISH": "Bullish sentiment - more calls than puts",
-            "EXTREME_BULLISH": "Extreme bullish sentiment - potential reversal signal (market overbought)"
+            "EXTREME_BULLISH": "Heavy put writing = strong support. Contrarian bullish (extreme fear often reverses).",
+            "BULLISH": "More puts than calls. Put support building — bullish bias.",
+            "NEUTRAL": "Balanced put-call activity. No clear directional bias.",
+            "BEARISH": "More calls than puts. Call resistance building — bearish bias.",
+            "EXTREME_BEARISH": "Heavy call writing = strong resistance. Contrarian bearish (extreme greed often reverses).",
         }
-        
+
         base = interpretations.get(sentiment, "Unknown sentiment")
-        
+
         if trend == "INCREASING":
-            base += " (trend: bearish)"
+            base += " PCR rising (more puts being added)."
         elif trend == "DECREASING":
-            base += " (trend: bullish)"
-        
+            base += " PCR falling (more calls being added)."
+
+        if intraday_pcr is not None:
+            if intraday_pcr > 1.0 and week_pcr < 1.0:
+                base += " Intraday: bullish divergence (day traders adding puts despite weekly bearish)."
+            elif intraday_pcr < 1.0 and week_pcr > 1.0:
+                base += " Intraday: bearish divergence (day traders adding calls despite weekly bullish)."
+
         return base
     
     def get_pcr_history(self, limit: int = 10) -> List[Dict]:
