@@ -1,7 +1,67 @@
 import unittest
 import time
 from collections import deque
+from unittest.mock import patch
+
+import pytest
+
 from app.intelligence.iv_rank import IVRankModule
+
+
+class TestIVRankComputeOrder:
+
+    def test_current_iv_excluded_from_range(self):
+        """Current IV should NOT be in the history when computing rank.
+
+        If we feed history [0.10, 0.20] and then current_iv=0.25,
+        rank should be computed against range [0.10, 0.20] -> rank = 150%.
+        If bug exists, current_iv is IN history -> range [0.10, 0.25] -> rank = 100%.
+        """
+        module = IVRankModule(history_size=100, history_interval=0)
+        # Manually disable disk persistence for test
+        module.save_state = lambda: None
+        module.load_state = lambda: None
+        module._history.clear()
+
+        # Seed history with known range: low=0.10, high=0.20
+        module._history.append(0.10)
+        module._history.append(0.20)
+        module._last_history_update_time = 0  # Force next append to succeed
+
+        # Feed current IV = 0.25 (above historical range)
+        with patch('time.time', return_value=1000.0):
+            module.update({"iv": 0.25})
+
+        ctx = module.get_context()
+        iv_rank = ctx["iv_rank"]
+
+        # Correct: rank = (0.25 - 0.10) / (0.20 - 0.10) * 100 = 150
+        # Bug:     rank = (0.25 - 0.10) / (0.25 - 0.10) * 100 = 100
+        assert iv_rank is not None
+        assert iv_rank > 100, \
+            f"IV Rank={iv_rank:.1f} -- current IV should exceed range (expect >100, got <=100)"
+
+    def test_current_iv_at_new_low_gives_negative_rank(self):
+        """When current IV is below all history, rank should be < 0."""
+        module = IVRankModule(history_size=100, history_interval=0)
+        module.save_state = lambda: None
+        module.load_state = lambda: None
+        module._history.clear()
+
+        module._history.append(0.15)
+        module._history.append(0.25)
+        module._last_history_update_time = 0
+
+        with patch('time.time', return_value=1000.0):
+            module.update({"iv": 0.10})
+
+        ctx = module.get_context()
+        iv_rank = ctx["iv_rank"]
+
+        # Correct: rank = (0.10 - 0.15) / (0.25 - 0.15) * 100 = -50
+        assert iv_rank is not None
+        assert iv_rank < 0, \
+            f"IV Rank={iv_rank:.1f} -- below all history should give negative rank"
 
 class TestIVRankStability(unittest.TestCase):
     def setUp(self):
@@ -47,26 +107,27 @@ class TestIVRankStability(unittest.TestCase):
         self.assertEqual(context["history_size"], 1)
 
     def test_rank_calculation_with_two_history_points(self):
-        """Test IV rank calculation with 2 history points."""
+        """Test IV rank calculation with 2 history points.
 
-        # 1st point: 20%
-        self.iv_module.update({"iv": 0.20})
+        With compute-before-append, rank is computed against history that
+        existed BEFORE the current update appends. So we need at least 2
+        points already in history for rank to be computed.
+        """
+        # Seed history directly with 2 points
+        self.iv_module._history.append(0.20)
+        self.iv_module._history.append(0.30)
 
-        # Wait for interval
-        time.sleep(self.history_interval + 0.01)
+        # Now update with current IV = 0.25
+        # History is [0.20, 0.30]. Rank = (0.25 - 0.20) / (0.30 - 0.20) = 50%
+        self.iv_module.update({"iv": 0.25})
+        context = self.iv_module.get_context()
+        self.assertEqual(context["iv_rank"], 50.0)
 
-        # 2nd point: 30% -> History [0.20, 0.30]
-        # Current is 0.30. Range [0.20, 0.30]. Rank = (0.30-0.20)/(0.30-0.20) = 100%
+        # Immediate update (no history change): Current 0.30
+        # History is [0.20, 0.30, 0.25]. Rank = (0.30 - 0.20) / (0.30 - 0.20) = 100%
         self.iv_module.update({"iv": 0.30})
         context = self.iv_module.get_context()
         self.assertEqual(context["iv_rank"], 100.0)
-
-        # Immediate update (no history change): Current 0.25
-        # History still [0.20, 0.30]. Range [0.20, 0.30]. Rank = (0.25-0.20)/0.10 = 50%
-        self.iv_module.update({"iv": 0.25})
-        context = self.iv_module.get_context()
-        self.assertEqual(context["history_size"], 2)
-        self.assertEqual(context["iv_rank"], 50.0)
 
     def test_rank_can_exceed_100(self):
         """Test that IV rank can go above 100 when current IV exceeds historical high."""
@@ -82,12 +143,13 @@ class TestIVRankStability(unittest.TestCase):
 
     def test_percentile_uses_strict_less_than(self):
         """Test that IV percentile counts values strictly below current IV."""
-        self.iv_module.update({"iv": 0.20})
-        time.sleep(self.history_interval + 0.01)
-        self.iv_module.update({"iv": 0.20})
+        # Seed history directly with 2 identical points
+        self.iv_module._history.append(0.20)
+        self.iv_module._history.append(0.20)
 
-        # History is [0.20, 0.20], current is 0.20
-        # Strict less-than: 0 values below 0.20 -> percentile = 0%
+        # Update with current IV = 0.20
+        # History is [0.20, 0.20]. Strict less-than: 0 values below 0.20 -> percentile = 0%
+        self.iv_module.update({"iv": 0.20})
         context = self.iv_module.get_context()
         self.assertEqual(context["iv_percentile"], 0.0)
 

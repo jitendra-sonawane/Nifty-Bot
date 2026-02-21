@@ -101,14 +101,14 @@ class IVRankModule(IntelligenceModule):
             if len(self._history) < self.WARMUP_SAMPLES
             else self._history_interval
         )
+        # Always re-compute rank FIRST against existing history (before appending)
+        self._compute()
+
+        # Then add current IV to history for future calculations (throttled)
         if now - self._last_history_update_time >= interval:
             self._history.append(self._current_iv)
             self._last_history_update_time = now
-            # Persist state after successful update
             self.save_state()
-            
-        # Always re-compute rank with latest current_iv against history
-        self._compute()
 
     def get_context(self) -> Dict[str, Any]:
         if self._iv_rank is None:
