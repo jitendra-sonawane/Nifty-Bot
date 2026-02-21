@@ -37,6 +37,9 @@ class MarketDataManager:
         # Bid/Ask depth cache: instrument_key → {"bids": [...], "asks": [...]}
         self.bid_ask_cache: Dict[str, Dict] = {}
         
+        # Thread safety: protects shared state read by async strategy runner
+        self._data_lock = threading.Lock()
+
         # State
         self.current_price = 0.0
         self.atm_strike = 0
@@ -286,7 +289,8 @@ class MarketDataManager:
 
                         # store OI data for PCR options
                         if oi is not None and key in self.pcr_option_metadata:
-                            self.pcr_oi_data[key] = float(oi)
+                            with self._data_lock:
+                                self.pcr_oi_data[key] = float(oi)
                             if not self._oi_first_received_logged:
                                 self._oi_first_received_logged = True
                                 logger.info(f"📊 OI DATA FLOWING: First OI received for {key} = {oi} (OI analysis will activate after 3 snapshots)")
@@ -306,13 +310,15 @@ class MarketDataManager:
                                             if traded_vol is not None:
                                                 break
                         if traded_vol is not None:
-                            self.pcr_volume_data[key] = float(traded_vol)
+                            with self._data_lock:
+                                self.pcr_volume_data[key] = float(traded_vol)
 
                         # Update synthetic volume (ATM CE + PE combined)
                         if self.option_ce_key and self.option_pe_key:
-                            ce_vol = self.pcr_volume_data.get(self.option_ce_key, 0)
-                            pe_vol = self.pcr_volume_data.get(self.option_pe_key, 0)
-                            self.synthetic_volume = float(ce_vol) + float(pe_vol)
+                            with self._data_lock:
+                                ce_vol = self.pcr_volume_data.get(self.option_ce_key, 0)
+                                pe_vol = self.pcr_volume_data.get(self.option_pe_key, 0)
+                                self.synthetic_volume = float(ce_vol) + float(pe_vol)
 
                         # Extract bid/ask depth from fullFeed for order book intelligence
                         if "fullFeed" in feed:
@@ -325,7 +331,8 @@ class MarketDataManager:
                         if price is not None:
                             try:
                                 price_val = float(price)
-                                self.instrument_prices[key] = price_val
+                                with self._data_lock:
+                                    self.instrument_prices[key] = price_val
                                 # Also update nifty50_quotes if applicable
                             except Exception as e:
                                 logger.error(f"Error caching price for {key}: {e}")
@@ -404,7 +411,8 @@ class MarketDataManager:
                                 if current_data["open"] == 0:
                                      current_data["open"] = current_data["price"]
 
-                            self.nifty50_quotes[symbol] = current_data
+                            with self._data_lock:
+                                self.nifty50_quotes[symbol] = current_data
                             # After every stock update push breadth + book to intelligence
                             self._push_intelligence_updates()
 
@@ -415,12 +423,12 @@ class MarketDataManager:
                             
                             # Check if this is Nifty 50
                             if key == self.nifty_key:
-                                self.current_price = price
-                                
-                                # Calculate market movement from previous close
-                                if self.previous_close and self.previous_close > 0:
-                                    self.market_movement = self.current_price - self.previous_close
-                                
+                                with self._data_lock:
+                                    self.current_price = price
+                                    # Calculate market movement from previous close
+                                    if self.previous_close and self.previous_close > 0:
+                                        self.market_movement = self.current_price - self.previous_close
+
                                 # Update ATM strike and subscriptions if needed
                                 self._update_atm_from_price(self.current_price)
                                 
@@ -443,14 +451,16 @@ class MarketDataManager:
                             
                             # Check if this is CE option
                             elif key == self.option_ce_key:
-                                self.option_ce_price = price
+                                with self._data_lock:
+                                    self.option_ce_price = price
                                 logger.info(f"📈 CE option ({self.atm_strike}): ₹{price:.2f}")
                                 # Use API greeks if available, otherwise local Black-Scholes
                                 self._emit_greeks_best_source()
 
                             # Check if this is PE option
                             elif key == self.option_pe_key:
-                                self.option_pe_price = price
+                                with self._data_lock:
+                                    self.option_pe_price = price
                                 logger.info(f"📉 PE option ({self.atm_strike}): ₹{price:.2f}")
                                 # Use API greeks if available, otherwise local Black-Scholes
                                 self._emit_greeks_best_source()
@@ -1324,15 +1334,16 @@ class MarketDataManager:
                             logger.debug("Greeks populated via fallback (REST quotes)")
             except Exception as e:
                 logger.debug(f"Greeks fallback fetch failed: {e}")
-        return {
-            "current_price": self.current_price,
-            "atm_strike": self.atm_strike,
-            "pcr": self.latest_pcr,
-            "pcr_analysis": self.latest_pcr_analysis,
-            "vix": self.latest_vix,
-            "sentiment": self.latest_sentiment,
-            "greeks": self.latest_greeks,
-            "previous_close": self.previous_close,
-            "market_movement": self.market_movement,
-            "synthetic_volume": self.synthetic_volume
-        }
+        with self._data_lock:
+            return {
+                "current_price": self.current_price,
+                "atm_strike": self.atm_strike,
+                "pcr": self.latest_pcr,
+                "pcr_analysis": self.latest_pcr_analysis,
+                "vix": self.latest_vix,
+                "sentiment": self.latest_sentiment,
+                "greeks": self.latest_greeks,
+                "previous_close": self.previous_close,
+                "market_movement": self.market_movement,
+                "synthetic_volume": self.synthetic_volume
+            }
