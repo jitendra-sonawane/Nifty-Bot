@@ -130,8 +130,13 @@ class GreeksCalculator:
 
     def implied_volatility(self, market_price, S, K, T, option_type='CE', risk_free_rate=None):
         """
-        Calculate Implied Volatility using Newton-Raphson method.
-        
+        Calculate Implied Volatility using dampened Newton-Raphson with bisection fallback.
+
+        Phase 1 uses a dampened Newton-Raphson iteration (70% step) for fast
+        convergence near the solution.  If NR stalls (e.g. vega near zero for
+        deep-OTM / near-expiry options), Phase 2 switches to bisection which
+        is guaranteed to converge.
+
         Args:
             market_price: Current option market price
             S: Spot price
@@ -139,7 +144,7 @@ class GreeksCalculator:
             T: Time to expiry (in years)
             option_type: 'CE' or 'PE'
             risk_free_rate: Override instance risk-free rate
-        
+
         Returns:
             Implied volatility as decimal (e.g., 0.25 for 25%)
         """
@@ -147,48 +152,61 @@ class GreeksCalculator:
             r = risk_free_rate
         else:
             r = self.r
-            
-        MAX_ITERATIONS = 100
-        PRECISION = 1.0e-5
-        
-        # Better initial guess for IV
-        # Use simple formula for rough IV estimate
+
+        if market_price <= 0 or S <= 0 or K <= 0:
+            return 0.0001
+
         intrinsic = max(S - K, 0) if option_type == 'CE' else max(K - S, 0)
         time_value = market_price - intrinsic
-        
-        if time_value <= 0:
-            # Option is at or below intrinsic, return minimal IV
-            return 0.01
-        
-        # Heuristic initial guess
-        sigma = np.sqrt(2 * np.pi / T) * (time_value / S) if T > 0 else 0.3
-        sigma = np.clip(sigma, 0.01, 2.0)  # Keep sigma in reasonable range (1% to 200%)
 
-        for iteration in range(MAX_ITERATIONS):
-            # Calculate price with current sigma
+        if time_value <= 0:
+            return 0.01
+
+        if T <= 0:
+            return 0.0001
+
+        PRECISION = 1.0e-5
+        NR_ITERATIONS = 50
+        BISECT_ITERATIONS = 50
+        DAMPENING = 0.7
+
+        # Heuristic initial guess
+        sigma = np.sqrt(2 * np.pi / T) * (time_value / S)
+        sigma = np.clip(sigma, 0.01, 2.0)
+
+        # Phase 1: Dampened Newton-Raphson
+        for _ in range(NR_ITERATIONS):
             price = self.black_scholes_price(S, K, T, sigma, option_type, r)
-            
-            # Calculate vega for Newton-Raphson update
-            d1 = self.d1(S, K, T, sigma)
-            vega = S * np.sqrt(T) * norm.pdf(d1)
-            
             diff = market_price - price
-            
-            # Check convergence
+
             if abs(diff) < PRECISION:
                 return max(round(sigma, 4), 0.0001)
-            
-            # Avoid division by zero
+
+            d1 = self.d1(S, K, T, sigma)
+            vega = S * np.sqrt(T) * norm.pdf(d1)
+
             if vega < 1e-10:
-                return max(round(sigma, 4), 0.0001)
-            
-            # Newton-Raphson update
-            sigma = sigma + diff / vega
-            
-            # Keep sigma in bounds
+                break  # Fall through to bisection
+
+            sigma = sigma + DAMPENING * (diff / vega)
             sigma = np.clip(sigma, 0.001, 5.0)
 
-        return max(round(sigma, 4), 0.0001)
+        # Phase 2: Bisection fallback (guaranteed convergence)
+        lo, hi = 0.001, 5.0
+        for _ in range(BISECT_ITERATIONS):
+            mid = (lo + hi) / 2
+            price = self.black_scholes_price(S, K, T, mid, option_type, r)
+            diff = market_price - price
+
+            if abs(diff) < PRECISION:
+                return max(round(mid, 4), 0.0001)
+
+            if diff > 0:
+                lo = mid
+            else:
+                hi = mid
+
+        return max(round((lo + hi) / 2, 4), 0.0001)
 
     def _calculate_quality_score(self, S, K, T, sigma, delta, gamma, vega, option_type):
         """

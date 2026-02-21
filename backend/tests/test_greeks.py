@@ -189,7 +189,7 @@ class TestBlackScholesPrice:
 
 
 class TestImpliedVolatility:
-    """Test IV calculation using Newton-Raphson."""
+    """Test IV calculation using dampened Newton-Raphson + bisection fallback."""
 
     def setup_method(self):
         self.calc = GreeksCalculator(risk_free_rate=0.06)
@@ -219,6 +219,38 @@ class TestImpliedVolatility:
         """IV should always be positive."""
         iv = self.calc.implied_volatility(10, 100, 100, 0.5, 'CE')
         assert iv > 0
+
+    def test_iv_atm_option(self):
+        """ATM option should converge to a reasonable IV."""
+        iv = self.calc.implied_volatility(
+            market_price=200, S=24000, K=24000, T=7/365, option_type='CE'
+        )
+        assert 0.05 < iv < 1.0, f"IV={iv} out of reasonable range for ATM"
+
+    def test_iv_deep_otm_converges(self):
+        """Deep OTM option should converge without oscillation."""
+        # Deep OTM CE: strike 25000 when spot is 23000, price is tiny
+        iv = self.calc.implied_volatility(
+            market_price=0.5, S=23000, K=25000, T=3/365, option_type='CE'
+        )
+        assert iv > 0, "IV should be positive for deep OTM"
+        assert iv < 5.0, f"IV={iv} — solver likely oscillated"
+
+    def test_iv_near_expiry_converges(self):
+        """Near-expiry option should converge (T very small)."""
+        iv = self.calc.implied_volatility(
+            market_price=50, S=24000, K=24000, T=0.5/365, option_type='CE'
+        )
+        assert iv > 0, "IV should be positive near expiry"
+
+    def test_iv_roundtrip(self):
+        """Price -> IV -> Price should roundtrip within tolerance."""
+        S, K, T = 24000, 24000, 10/365
+        original_iv = 0.15
+        price = self.calc.black_scholes_price(S, K, T, original_iv, 'CE')
+        recovered_iv = self.calc.implied_volatility(price, S, K, T, 'CE')
+        assert abs(recovered_iv - original_iv) < 0.01, \
+            f"Roundtrip failed: {original_iv} -> price={price:.2f} -> {recovered_iv}"
 
 
 class TestQualityScore:
