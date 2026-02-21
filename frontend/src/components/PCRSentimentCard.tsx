@@ -34,8 +34,8 @@ const PCRSentimentCard: React.FC<PCRSentimentCardProps> = ({ pcrAnalysis, sentim
 
     const getTrendColor = (trend: string) => {
         switch (trend) {
-            case 'INCREASING': return 'text-red-400';
-            case 'DECREASING': return 'text-green-400';
+            case 'INCREASING': return 'text-green-400';
+            case 'DECREASING': return 'text-red-400';
             default: return 'text-gray-400';
         }
     };
@@ -50,8 +50,8 @@ const PCRSentimentCard: React.FC<PCRSentimentCardProps> = ({ pcrAnalysis, sentim
 
     const getTrendLabel = (trend: string) => {
         switch (trend) {
-            case 'INCREASING': return 'Bearish Trend';
-            case 'DECREASING': return 'Bullish Trend';
+            case 'INCREASING': return 'Bullish Trend';
+            case 'DECREASING': return 'Bearish Trend';
             default: return 'Stable';
         }
     };
@@ -79,12 +79,12 @@ const PCRSentimentCard: React.FC<PCRSentimentCardProps> = ({ pcrAnalysis, sentim
                     {/* Neutral zone marker */}
                     <div className="absolute left-1/2 top-0 w-0.5 h-full bg-yellow-400 opacity-50"></div>
                     {/* PCR indicator */}
-                    <div 
+                    <div
                         className={`h-full rounded-full transition-all duration-1000 ${
-                            pcr > 1.5 ? 'bg-red-500' :
-                            pcr > 1.0 ? 'bg-red-400' :
-                            pcr > 0.5 ? 'bg-green-400' :
-                            'bg-green-500'
+                            pcr > 1.5 ? 'bg-green-500' :
+                            pcr > 1.0 ? 'bg-green-400' :
+                            pcr > 0.5 ? 'bg-red-400' :
+                            'bg-red-500'
                         }`}
                         style={{ 
                             width: `${Math.min(Math.max((pcr / 2) * 100, 5), 95)}%` 
@@ -92,8 +92,8 @@ const PCRSentimentCard: React.FC<PCRSentimentCardProps> = ({ pcrAnalysis, sentim
                     ></div>
                 </div>
                 <div className="flex justify-between text-xs text-gray-500 mt-1">
-                    <span>Bullish (&lt;1.0)</span>
-                    <span>Bearish (&gt;1.0)</span>
+                    <span>Bearish (&lt;1.0)</span>
+                    <span>Bullish (&gt;1.0)</span>
                 </div>
             </div>
 
@@ -120,11 +120,11 @@ const PCRSentimentCard: React.FC<PCRSentimentCardProps> = ({ pcrAnalysis, sentim
                 <div className="grid grid-cols-2 gap-2 text-xs">
                     <div className="text-center">
                         <div className="text-gray-500">Extreme Bearish</div>
-                        <div className="font-mono text-red-500">&gt; 1.5</div>
+                        <div className="font-mono text-red-500">&lt; 0.5</div>
                     </div>
                     <div className="text-center">
                         <div className="text-gray-500">Extreme Bullish</div>
-                        <div className="font-mono text-green-500">&lt; 0.5</div>
+                        <div className="font-mono text-green-500">&gt; 1.5</div>
                     </div>
                 </div>
             </div>

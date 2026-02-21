@@ -24,8 +24,8 @@ const PCRGauge: React.FC<PCRGaugeProps> = React.memo(({ pcrAnalysis, sentiment }
 
     const getPCRColor = () => {
         if (!pcr) return 'var(--text-muted)';
-        if (pcr > 1.2) return 'var(--color-loss-text)';
-        if (pcr < 0.8) return 'var(--color-profit-text)';
+        if (pcr > 1.2) return 'var(--color-profit-text)';
+        if (pcr < 0.8) return 'var(--color-loss-text)';
         return 'var(--color-warning)';
     };
 
