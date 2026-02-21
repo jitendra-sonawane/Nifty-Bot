@@ -74,6 +74,8 @@ class MarketDataManager:
         self.pcr_option_keys = []  # List of all option instrument keys for PCR
         self.pcr_option_metadata = {}  # Map: instrument_key -> {strike, option_type, trading_symbol}
         self.pcr_oi_data = {}  # Map: instrument_key -> open_interest value
+        self.pcr_volume_data = {}  # Map: instrument_key -> traded volume
+        self.synthetic_volume: float = 0.0  # ATM CE+PE combined volume proxy
         self._oi_first_received_logged = False  # One-time log when first OI arrives
         self._pe_feed_debug_logged = False  # One-time raw feed dump for PE option
         self.last_pcr_calculation = 0  # Timestamp of last PCR calculation
@@ -281,13 +283,36 @@ class MarketDataManager:
                             price = feed["ltpc"].get("ltp")
                         elif "ltp" in feed:
                             price = feed["ltp"]
-                        
+
                         # store OI data for PCR options
                         if oi is not None and key in self.pcr_option_metadata:
                             self.pcr_oi_data[key] = float(oi)
                             if not self._oi_first_received_logged:
                                 self._oi_first_received_logged = True
                                 logger.info(f"📊 OI DATA FLOWING: First OI received for {key} = {oi} (OI analysis will activate after 3 snapshots)")
+
+                        # Extract and store traded volume for options
+                        traded_vol = None
+                        if "fullFeed" in feed:
+                            mff_vol = feed["fullFeed"].get("marketFF", {})
+                            if "eFeedDetails" in mff_vol:
+                                traded_vol = mff_vol["eFeedDetails"].get("v") or mff_vol["eFeedDetails"].get("volume")
+                            if traded_vol is None and "marketOHLC" in mff_vol:
+                                ohlc_vol_data = mff_vol["marketOHLC"]
+                                if isinstance(ohlc_vol_data, dict) and "ohlc" in ohlc_vol_data:
+                                    for ohlc_e in ohlc_vol_data["ohlc"]:
+                                        if isinstance(ohlc_e, dict):
+                                            traded_vol = ohlc_e.get("v") or ohlc_e.get("volume")
+                                            if traded_vol is not None:
+                                                break
+                        if traded_vol is not None:
+                            self.pcr_volume_data[key] = float(traded_vol)
+
+                        # Update synthetic volume (ATM CE + PE combined)
+                        if self.option_ce_key and self.option_pe_key:
+                            ce_vol = self.pcr_volume_data.get(self.option_ce_key, 0)
+                            pe_vol = self.pcr_volume_data.get(self.option_pe_key, 0)
+                            self.synthetic_volume = float(ce_vol) + float(pe_vol)
 
                         # Extract bid/ask depth from fullFeed for order book intelligence
                         if "fullFeed" in feed:
@@ -1308,5 +1333,6 @@ class MarketDataManager:
             "sentiment": self.latest_sentiment,
             "greeks": self.latest_greeks,
             "previous_close": self.previous_close,
-            "market_movement": self.market_movement
+            "market_movement": self.market_movement,
+            "synthetic_volume": self.synthetic_volume
         }

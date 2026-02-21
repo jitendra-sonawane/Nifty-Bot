@@ -83,7 +83,8 @@ class StrategyRunner:
 
         # 1. Update Candle
         try:
-            is_new_candle, df = self.candle_manager.update(current_price, volume=0)
+            synthetic_vol = market_state.get('synthetic_volume', 0)
+            is_new_candle, df = self.candle_manager.update(current_price, volume=synthetic_vol)
         except Exception as e:
             logger.error(f"CandleManager.update CRASHED: {e}", exc_info=True)
             return None
