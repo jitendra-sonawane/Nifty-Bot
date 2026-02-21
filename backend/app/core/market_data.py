@@ -76,8 +76,8 @@ class MarketDataManager:
         # PCR Options - WebSocket subscriptions for all options in strike range
         self.pcr_option_keys = []  # List of all option instrument keys for PCR
         self.pcr_option_metadata = {}  # Map: instrument_key -> {strike, option_type, trading_symbol}
-        self.pcr_oi_data = {}  # Map: instrument_key -> open_interest value
-        self.pcr_volume_data = {}  # Map: instrument_key -> traded volume
+        self.pcr_oi_data = {}  # Map: instrument_key -> (open_interest, timestamp)
+        self.pcr_volume_data = {}  # Map: instrument_key -> (traded_volume, timestamp)
         self.synthetic_volume: float = 0.0  # ATM CE+PE combined volume proxy
         self._oi_first_received_logged = False  # One-time log when first OI arrives
         self._pe_feed_debug_logged = False  # One-time raw feed dump for PE option
@@ -290,7 +290,7 @@ class MarketDataManager:
                         # store OI data for PCR options
                         if oi is not None and key in self.pcr_option_metadata:
                             with self._data_lock:
-                                self.pcr_oi_data[key] = float(oi)
+                                self.pcr_oi_data[key] = (float(oi), time.time())
                             if not self._oi_first_received_logged:
                                 self._oi_first_received_logged = True
                                 logger.info(f"📊 OI DATA FLOWING: First OI received for {key} = {oi} (OI analysis will activate after 3 snapshots)")
@@ -311,14 +311,16 @@ class MarketDataManager:
                                                 break
                         if traded_vol is not None:
                             with self._data_lock:
-                                self.pcr_volume_data[key] = float(traded_vol)
+                                self.pcr_volume_data[key] = (float(traded_vol), time.time())
 
                         # Update synthetic volume (ATM CE + PE combined)
                         if self.option_ce_key and self.option_pe_key:
                             with self._data_lock:
-                                ce_vol = self.pcr_volume_data.get(self.option_ce_key, 0)
-                                pe_vol = self.pcr_volume_data.get(self.option_pe_key, 0)
-                                self.synthetic_volume = float(ce_vol) + float(pe_vol)
+                                ce_entry = self.pcr_volume_data.get(self.option_ce_key)
+                                pe_entry = self.pcr_volume_data.get(self.option_pe_key)
+                                ce_vol = ce_entry[0] if ce_entry else 0.0
+                                pe_vol = pe_entry[0] if pe_entry else 0.0
+                                self.synthetic_volume = ce_vol + pe_vol
 
                         # Extract bid/ask depth from fullFeed for order book intelligence
                         if "fullFeed" in feed:
@@ -560,6 +562,9 @@ class MarketDataManager:
                 elif pe_iv:
                     iv = float(pe_iv)
 
+            # Extract raw OI values from (oi, timestamp) tuples for downstream consumers
+            raw_oi = {k: v for k, (v, _ts) in self.pcr_oi_data.items()}
+
             self.intelligence_engine.update({
                 "nifty50_quotes":      dict(self.nifty50_quotes),
                 "bid_ask":             dict(self.bid_ask_cache),
@@ -567,7 +572,7 @@ class MarketDataManager:
                 "option_pe_key":       self.option_pe_key,
                 "greeks":              self.latest_greeks,
                 "iv":                  iv,  # Direct IV for IVRankModule
-                "pcr_oi_data":         dict(self.pcr_oi_data),
+                "pcr_oi_data":         raw_oi,
                 "pcr_option_metadata": dict(self.pcr_option_metadata),
                 "current_price":       self.current_price,
             })
@@ -988,14 +993,24 @@ class MarketDataManager:
                         logger.debug("⏳ Waiting for WebSocket OI data...")
                         await asyncio.sleep(2)
                         continue
-                    
-                    # Calculate total CE and PE OI from WebSocket data
+
+                    # Build fresh-only OI dict (skip entries older than 30 seconds)
+                    now = time.time()
+                    with self._data_lock:
+                        fresh_oi = {k: v for k, (v, ts) in self.pcr_oi_data.items() if now - ts < 30}
+
+                    if not fresh_oi:
+                        logger.debug("⏳ All OI data is stale (>30s), waiting for fresh ticks...")
+                        await asyncio.sleep(2)
+                        continue
+
+                    # Calculate total CE and PE OI from fresh WebSocket data
                     total_ce_oi = 0
                     total_pe_oi = 0
                     ce_keys_with_oi = 0
                     pe_keys_with_oi = 0
 
-                    for key, oi in self.pcr_oi_data.items():
+                    for key, oi in fresh_oi.items():
                         if key in self.pcr_option_metadata:
                             opt_type = self.pcr_option_metadata[key]['option_type']
                             if opt_type == 'CE':
@@ -1022,8 +1037,8 @@ class MarketDataManager:
                             f"PE OI: {total_pe_oi:,.0f} ({pe_keys_with_oi} keys) | Sentiment: {self.pcr_calc.get_sentiment(pcr)}"
                         )
                         if pe_keys_with_oi == 0:
-                            logger.warning(f"⚠️ PE OI is ZERO — no PE instruments reporting OI. Total OI data points: {len(self.pcr_oi_data)}")
-                        logger.debug(f"   OI data points: {len(self.pcr_oi_data)}")
+                            logger.warning(f"⚠️ PE OI is ZERO — no PE instruments reporting OI. Fresh OI points: {len(fresh_oi)}, total: {len(self.pcr_oi_data)}")
+                        logger.debug(f"   OI data points: {len(fresh_oi)} fresh / {len(self.pcr_oi_data)} total")
                     else:
                         logger.warning(f"⚠️ PCR calculation skipped: CE OI is zero")
                     
