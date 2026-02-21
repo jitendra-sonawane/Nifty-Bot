@@ -174,6 +174,28 @@ class TestCalculateATR:
         valid = atr.dropna()
         assert (valid >= 0).all()
 
+    def test_atr_uses_ewm(self, sample_ohlcv_df):
+        """ATR should use Wilder's EWM, not SMA rolling mean."""
+        atr = self.engine.calculate_atr(sample_ohlcv_df)
+        valid = atr.dropna()
+        assert len(valid) > 0
+        # EWM starts producing values from row 0 (not row period-1 like SMA)
+        # After fix, first non-NaN should appear much earlier than row 14
+        first_valid_idx = atr.first_valid_index()
+        first_pos = sample_ohlcv_df.index.get_loc(first_valid_idx)
+        # EWM produces values from index 1 (after first diff); SMA waits until index 14
+        assert first_pos < 5, f"ATR first valid at position {first_pos} — likely still SMA"
+
+    def test_atr_consistency_with_regime_module(self, sample_ohlcv_df):
+        """ATR from strategy.py should match ATR from market_regime.py (both Wilder's)."""
+        from app.intelligence.market_regime import MarketRegimeModule
+        strategy_atr = self.engine.calculate_atr(sample_ohlcv_df).iloc[-1]
+        regime_atr_pct = MarketRegimeModule._calculate_atr_pct(sample_ohlcv_df, 14)
+        regime_atr = regime_atr_pct / 100 * sample_ohlcv_df['close'].iloc[-1]
+        # Both should be within 5% of each other since they use the same formula
+        assert abs(strategy_atr - regime_atr) / regime_atr < 0.05, \
+            f"Strategy ATR={strategy_atr:.2f} vs Regime ATR={regime_atr:.2f} — mismatch"
+
 
 class TestDetectBreakout:
 

@@ -196,7 +196,7 @@ class StrategyEngine:
         tr    = pd.concat([high - low,
                            (high - close.shift(1)).abs(),
                            (low  - close.shift(1)).abs()], axis=1).max(axis=1)
-        return tr.rolling(window=period).mean()
+        return tr.ewm(alpha=1/period, adjust=False).mean()
 
     def calculate_avg_volume(self, df, period=20):
         return df['volume'].rolling(window=period).mean()

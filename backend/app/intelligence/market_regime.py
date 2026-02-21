@@ -174,6 +174,6 @@ class MarketRegimeModule(IntelligenceModule):
         tr    = pd.concat([high - low,
                            (high - close.shift()).abs(),
                            (low  - close.shift()).abs()], axis=1).max(axis=1)
-        atr   = tr.rolling(period).mean().iloc[-1]
+        atr   = tr.ewm(alpha=1/period, adjust=False).mean().iloc[-1]
         price = close.iloc[-1]
         return float(atr / price * 100) if price > 0 else 0.0
