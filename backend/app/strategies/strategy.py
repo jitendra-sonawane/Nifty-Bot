@@ -116,6 +116,23 @@ class StrategyEngine:
 
         return pd.Series(supertrend, index=df.index), final_upperband, final_lowerband
 
+    @staticmethod
+    def _cluster_levels(levels, threshold_pct=0.3):
+        """Group nearby price levels and return cluster averages.
+
+        Levels within threshold_pct% of each other are merged into one.
+        """
+        if not levels:
+            return []
+        sorted_levels = sorted(levels)
+        clusters = [[sorted_levels[0]]]
+        for level in sorted_levels[1:]:
+            if clusters[-1][-1] > 0 and (level - clusters[-1][-1]) / clusters[-1][-1] * 100 < threshold_pct:
+                clusters[-1].append(level)
+            else:
+                clusters.append([level])
+        return [round(sum(c) / len(c), 2) for c in clusters]
+
     def calculate_support_resistance(self, df, window=20):
         high          = df['high']
         low           = df['low']
@@ -136,8 +153,11 @@ class StrategyEngine:
 
         max_high = high.iloc[-lookback:].max()
         min_low  = low.iloc[-lookback:].min()
-        resistance_levels = sorted(list(set(resistance_levels + [round(max_high, 2)])), reverse=True)
-        support_levels    = sorted(list(set(support_levels    + [round(min_low,  2)])), reverse=True)
+        resistance_levels = list(set(resistance_levels + [round(max_high, 2)]))
+        support_levels    = list(set(support_levels    + [round(min_low,  2)]))
+        # Cluster nearby levels to reduce noise
+        resistance_levels = sorted(self._cluster_levels(resistance_levels), reverse=True)
+        support_levels    = sorted(self._cluster_levels(support_levels), reverse=True)
 
         supports_below    = [s for s in support_levels    if s < current_price]
         resistances_above = [r for r in resistance_levels if r > current_price]

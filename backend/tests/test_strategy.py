@@ -353,6 +353,33 @@ class TestCheckSignal:
                 assert not np.isnan(val), f"{key} is NaN"
 
 
+class TestSupportResistanceClustering:
+
+    def setup_method(self):
+        self.engine = StrategyEngine()
+
+    def test_cluster_reduces_noise(self, sample_ohlcv_df):
+        """Clustering should produce fewer levels than raw detection."""
+        result = self.engine.calculate_support_resistance(sample_ohlcv_df)
+        # After clustering, should have <= 5 support and <= 5 resistance levels
+        assert len(result['support_levels']) <= 5
+        assert len(result['resistance_levels']) <= 5
+
+    def test_cluster_levels_helper(self):
+        """Test the clustering helper directly."""
+        # Levels very close together should merge
+        levels = [24000, 24005, 24010, 24100, 24105, 24300]
+        clustered = self.engine._cluster_levels(levels, threshold_pct=0.3)
+        # 24000/24005/24010 should cluster (within 0.3%)
+        # 24100/24105 should cluster
+        # 24300 is separate
+        assert len(clustered) <= 4, f"Expected <=4 clusters, got {len(clustered)}"
+
+    def test_cluster_empty(self):
+        """Empty input should return empty."""
+        assert self.engine._cluster_levels([]) == []
+
+
 class TestEMAFilterMode:
 
     def setup_method(self):
