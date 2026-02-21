@@ -244,6 +244,45 @@ class TestDetectBreakout:
         assert result['is_breakout'] is True
         assert result['breakout_type'] == "UPSIDE"
 
+    def test_single_candle_breakout(self):
+        """Breakout should trigger on single candle close above threshold.
+
+        The previous close (index -2) stays within the reference range so that
+        the old two-candle requirement would have blocked this breakout.  Only
+        the current close (index -1) exceeds the threshold.
+        """
+        np.random.seed(42)
+        n = 60
+        base = 24000.0
+        prices = np.full(n, base)
+        highs = np.full(n, base + 10)
+        lows = np.full(n, base - 10)
+        # 58 candles of range-bound data (indices 0-57)
+        prices[:58] = base + np.random.uniform(-50, 50, 58)
+        highs[:58] = prices[:58] + 10
+        lows[:58] = prices[:58] - 10
+        # prev_close (index 58) stays within the range
+        prices[58] = base
+        highs[58] = base + 10
+        lows[58] = base - 10
+        # current candle (index 59) breaks out above threshold
+        # threshold_up ~ highest_high * 1.015 ~ 24060 * 1.015 ~ 24421
+        prices[59] = base + 500
+        highs[59] = prices[59] + 10
+        lows[59] = prices[59] - 10
+
+        df = pd.DataFrame({
+            'open': prices - 5,
+            'high': highs,
+            'low': lows,
+            'close': prices,
+            'volume': np.full(n, 500000),
+        })
+
+        result = self.engine.detect_breakout(df)
+        assert result['is_breakout'] is True, "Single candle breakout should be detected"
+        assert result['breakout_type'] == 'UPSIDE'
+
 
 class TestCalculateSupportResistance:
 

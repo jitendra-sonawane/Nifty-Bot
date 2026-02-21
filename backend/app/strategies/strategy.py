@@ -167,7 +167,6 @@ class StrategyEngine:
         high          = df['high']
         low           = df['low']
         current_price = close.iloc[-1]
-        prev_close    = close.iloc[-2]
 
         ref_high        = high.iloc[-lookback - 2:-2]
         ref_low         = low.iloc[ -lookback - 2:-2]
@@ -177,12 +176,12 @@ class StrategyEngine:
         threshold_up   = highest_high * (1 + sensitivity)
         threshold_down = lowest_low   * (1 - sensitivity)
 
-        if current_price > threshold_up and prev_close > highest_high:
+        if current_price > threshold_up:
             return {'is_breakout': True,  'breakout_type': 'UPSIDE',
                     'breakout_level': round(highest_high, 2),
                     'strength': round(((current_price - highest_high) / highest_high) * 100, 2)}
 
-        if current_price < threshold_down and prev_close < lowest_low:
+        if current_price < threshold_down:
             return {'is_breakout': True,  'breakout_type': 'DOWNSIDE',
                     'breakout_level': round(lowest_low, 2),
                     'strength': round(((lowest_low - current_price) / lowest_low) * 100, 2)}
