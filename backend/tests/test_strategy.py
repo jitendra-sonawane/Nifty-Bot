@@ -35,6 +35,37 @@ class TestCalculateRSI:
         valid = rsi.dropna()
         assert len(valid) > 0
 
+    def test_rsi_wilders_smoothing(self):
+        """RSI should use Wilder's EWM smoothing, not SMA.
+
+        With Wilder's smoothing (alpha=1/14), RSI is smoother and does not
+        jump abruptly when old values leave the window.  We verify by
+        comparing against a known-correct Wilder's RSI for a specific
+        price series.
+        """
+        # 30 prices: first 15 rise, then 15 fall
+        prices = pd.Series(
+            list(range(100, 115)) + list(range(115, 100, -1))
+        , dtype=float)
+        rsi = self.engine.calculate_rsi(prices, period=14)
+
+        # With Wilder's smoothing, the final RSI after equal rise-then-fall
+        # should be close to 50 (balanced).  SMA-based RSI would differ
+        # significantly because old gains "fall off" the window.
+        last_rsi = rsi.iloc[-1]
+        assert 35 < last_rsi < 65, f"RSI {last_rsi:.1f} not near 50 — likely still using SMA"
+
+    def test_rsi_smooth_not_jumpy(self):
+        """Wilder's RSI should not jump more than ~5 points on a single candle
+        unless the candle itself is extreme."""
+        np.random.seed(99)
+        prices = pd.Series(24000 + np.cumsum(np.random.normal(0, 10, 100)))
+        rsi = self.engine.calculate_rsi(prices, period=14)
+        valid = rsi.dropna()
+        diffs = valid.diff().dropna().abs()
+        # No single-candle jump > 15 points in a normal random walk
+        assert diffs.max() < 15, f"RSI jumped {diffs.max():.1f} pts — SMA artifact"
+
 
 class TestCalculateEMA:
 

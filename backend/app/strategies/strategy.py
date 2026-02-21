@@ -31,9 +31,27 @@ class StrategyEngine:
 
     def calculate_rsi(self, series, period=14):
         delta = series.diff()
-        gain  = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-        loss  = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-        rs    = gain / loss
+        gain  = delta.where(delta > 0, 0)
+        loss  = -delta.where(delta < 0, 0)
+
+        # Wilder's smoothing: seed with SMA of first `period` deltas,
+        # then apply exponential smoothing with alpha=1/period.
+        avg_gain = gain.copy() * 0.0
+        avg_loss = loss.copy() * 0.0
+
+        # SMA seed (index `period` because index 0 has NaN from .diff())
+        avg_gain.iloc[period] = gain.iloc[1:period + 1].mean()
+        avg_loss.iloc[period] = loss.iloc[1:period + 1].mean()
+
+        for i in range(period + 1, len(series)):
+            avg_gain.iloc[i] = (avg_gain.iloc[i - 1] * (period - 1) + gain.iloc[i]) / period
+            avg_loss.iloc[i] = (avg_loss.iloc[i - 1] * (period - 1) + loss.iloc[i]) / period
+
+        # Mark values before the seed as NaN
+        avg_gain.iloc[:period] = np.nan
+        avg_loss.iloc[:period] = np.nan
+
+        rs = avg_gain / avg_loss
         return 100 - (100 / (1 + rs))
 
     def calculate_ema(self, series, period):
