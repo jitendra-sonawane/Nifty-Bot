@@ -145,6 +145,17 @@ class TestCalculateSupertrend:
         for val in trend:
             assert val in (True, False)
 
+    def test_supertrend_atr_uses_ewm(self, sample_ohlcv_df):
+        """Supertrend's internal ATR should use Wilder's EWM."""
+        # After fix, supertrend should produce non-NaN bands earlier
+        # because EWM doesn't wait for a full window
+        st, upper, lower = self.engine.calculate_supertrend(sample_ohlcv_df, period=7)
+        # With EWM, upper/lower bands should have valid values by row 2
+        # With SMA (rolling(7)), first valid is at row 7
+        first_valid = upper.first_valid_index()
+        first_pos = sample_ohlcv_df.index.get_loc(first_valid)
+        assert first_pos < 3, f"Supertrend bands valid at position {first_pos} — likely SMA"
+
 
 class TestCalculateVWAP:
 

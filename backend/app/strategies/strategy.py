@@ -80,7 +80,7 @@ class StrategyEngine:
         tr2 = abs(high - close.shift(1))
         tr3 = abs(low  - close.shift(1))
         tr  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-        atr = tr.rolling(window=period).mean()
+        atr = tr.ewm(alpha=1/period, adjust=False).mean()
 
         hl2              = (high + low) / 2
         basic_upperband  = hl2 + (multiplier * atr)
