@@ -116,6 +116,22 @@ class CandleManager:
         
         logger.info(f"✅ CandleManager initialized. Last candle: {last_candle_time}. Next start: {self.current_candle_start}")
 
+        # Timezone alignment check
+        if len(self.df) > 0:
+            first_ts = self.df.index[0]
+            last_ts = self.df.index[-1]
+            logger.info(
+                f"Timezone verification: First={first_ts} Last={last_ts} TZ={self.df.index.tz} "
+                f"Candles={len(self.df)}"
+            )
+            # Sanity: last candle should be during Indian market hours (09:15-15:30 IST)
+            last_hour = last_ts.hour
+            if last_hour < 9 or last_hour > 16:
+                logger.warning(
+                    f"TIMEZONE MISMATCH: Last candle at hour {last_hour} is outside "
+                    f"Indian market hours (09-16). Timestamps may be UTC instead of IST."
+                )
+
     def update(self, price: float, volume: float = 0):
         """
         Update the current candle with new tick data.
