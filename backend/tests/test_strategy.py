@@ -157,22 +157,7 @@ class TestCalculateSupertrend:
         assert first_pos < 3, f"Supertrend bands valid at position {first_pos} — likely SMA"
 
 
-class TestCalculateVWAP:
-
-    def setup_method(self):
-        self.engine = StrategyEngine()
-
-    def test_vwap_no_nans(self, sample_ohlcv_df):
-        vwap = self.engine.calculate_vwap(sample_ohlcv_df)
-        assert not vwap.isna().any()
-
-    def test_vwap_within_price_range(self, sample_ohlcv_df):
-        vwap = self.engine.calculate_vwap(sample_ohlcv_df)
-        # VWAP should be within the overall high-low range
-        overall_high = sample_ohlcv_df['high'].max()
-        overall_low = sample_ohlcv_df['low'].min()
-        assert vwap.iloc[-1] >= overall_low * 0.95
-        assert vwap.iloc[-1] <= overall_high * 1.05
+# TestCalculateVWAP removed — calculate_vwap method no longer exists on StrategyEngine
 
 
 class TestCalculateATR:
@@ -322,16 +307,19 @@ class TestCheckSignal:
     def test_result_has_all_keys(self, sample_ohlcv_df):
         result = self.engine.check_signal(sample_ohlcv_df)
         expected_keys = {'signal', 'reason', 'rsi', 'supertrend', 'ema_5', 'ema_20',
-                         'vwap', 'pcr', 'greeks', 'support_resistance', 'breakout',
-                         'filters', 'volume_ratio', 'atr_pct'}
+                         'pcr', 'greeks', 'support_resistance', 'breakout',
+                         'filters', 'volume_ratio', 'atr_pct', 'progress',
+                         'intelligence', 'pdh_pdl_pdc'}
         assert expected_keys.issubset(set(result.keys()))
 
     def test_filters_dict_present(self, sample_ohlcv_df):
         result = self.engine.check_signal(sample_ohlcv_df)
         filters = result['filters']
-        expected = {'supertrend', 'ema_crossover', 'price_vwap', 'rsi',
-                    'volume', 'volatility', 'pcr', 'greeks', 'entry_confirmation'}
-        assert expected == set(filters.keys())
+        # Base filters (9) + intelligence filters (8) = 17 total
+        base_filters = {'supertrend', 'ema_crossover', 'rsi',
+                        'volume', 'volatility', 'pcr', 'greeks', 'entry_confirmation'}
+        assert base_filters.issubset(set(filters.keys())), \
+            f"Missing base filters: {base_filters - set(filters.keys())}"
 
     def test_backtest_mode_skips_pcr_greeks(self, sample_ohlcv_df):
         result = self.engine.check_signal(sample_ohlcv_df, pcr=None, greeks=None,
@@ -347,7 +335,7 @@ class TestCheckSignal:
     def test_no_nan_in_output(self, sample_ohlcv_df):
         """Output should have no NaN values (sanitized)."""
         result = self.engine.check_signal(sample_ohlcv_df)
-        for key in ['rsi', 'ema_5', 'ema_20', 'vwap', 'atr_pct']:
+        for key in ['rsi', 'ema_5', 'ema_20', 'atr_pct']:
             val = result[key]
             if val is not None:
                 assert not np.isnan(val), f"{key} is NaN"
