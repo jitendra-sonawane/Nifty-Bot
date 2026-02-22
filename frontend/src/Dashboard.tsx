@@ -16,8 +16,11 @@ import IndicatorStrip from './features/market/IndicatorStrip';
 
 // Decision Panel
 import BotControls from './features/controls/BotControls';
-import SignalCard from './features/signals/SignalCard';
+import SignalContextCard from './features/signals/SignalContextCard';
 import FilterMatrix from './features/signals/FilterMatrix';
+
+// Dashboard
+import HeroStrip from './features/dashboard/HeroStrip';
 
 import Skeleton from './shared/Skeleton';
 
@@ -155,6 +158,22 @@ const Dashboard: React.FC = () => {
                 </div>
             )}
 
+            {/* ═══ HERO STRIP ═══ */}
+            <HeroStrip
+                signal={signal}
+                reasoning={reasoning}
+                positions={(status as any)?.positions}
+                pnl={{
+                    daily: (status as any)?.paper_daily_pnl ?? (status as any)?.risk_stats?.daily_pnl ?? 0,
+                    unrealized: (status as any)?.paper_pnl ?? 0,
+                }}
+                priceHistory={priceHistory}
+                strategyData={strategyData}
+                intelligence={intelligence}
+                pcrAnalysis={pcrAnalysis}
+                sentiment={sentiment}
+            />
+
             {/* ═══ MAIN 2-COLUMN LAYOUT (65% chart / 35% decision) ═══ */}
             <div className="grid gap-3 lg:grid-cols-[1fr_var(--decision-panel-width)]">
 
@@ -244,7 +263,7 @@ const Dashboard: React.FC = () => {
                         startBot={startBot}
                         stopBot={stopBot}
                     />
-                    <SignalCard signal={signal} reasoning={reasoning} strategyData={strategyData} />
+                    <SignalContextCard signal={signal} reasoning={reasoning} strategyData={strategyData} />
                     <FilterMatrix filters={strategyData?.filters} />
                 </div>
             </div>
