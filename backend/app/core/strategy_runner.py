@@ -5,6 +5,7 @@ import pandas as pd
 from typing import List, Callable, Dict, Optional, TYPE_CHECKING
 from app.strategies.strategy import StrategyEngine
 from app.strategies.reasoning import TradingReasoning
+from app.strategies.strategy_router import StrategyRouter
 from app.data.data_fetcher import DataFetcher
 from app.core.config import Config
 from app.core.streaming import StreamingEMA, CandleManager
@@ -30,10 +31,11 @@ class StrategyRunner:
         self.latest_strategy_data = {}
         self.latest_reasoning = {}
         self.target_contract = None
+        self.strategy_router = StrategyRouter()
         
         # Signal Cooldown
         self.last_signal_time = {}
-        self.signal_cooldown_seconds = 120
+        self.signal_cooldown_seconds = Config.SIGNAL_COOLDOWN_SECONDS
         
         # Support/Resistance Caching (recalculate every 5 minutes)
         self.last_sr_calculation_time = 0
@@ -196,6 +198,53 @@ class StrategyRunner:
                 except Exception as e:
                     logger.error(f"Error generating reasoning: {e}")
                 
+                # ── Multi-leg strategy routing ──────────────────────────────
+                # If a multi-leg strategy is active, route to StrategyRouter
+                # instead of emitting a single-leg signal.
+                if self.strategy_router.is_multi_leg and not dry_run:
+                    multi_leg_indicators = {
+                        "rsi": result.get("rsi"),
+                        "supertrend": result.get("supertrend"),
+                        "ema_5": cur_ema_5,
+                        "ema_20": cur_ema_20,
+                        "atr": result.get("atr_pct"),
+                        "vix": vix,
+                        "breakout": result.get("breakout", {}),
+                        "signal": signal,
+                        "confidence": result.get("progress", {}).get("score", 50) / 100,
+                    }
+
+                    multi_signal = self.strategy_router.generate_multi_leg_signal(
+                        spot_price=current_price,
+                        indicators=multi_leg_indicators,
+                        market_state=market_state,
+                        intelligence_context=intelligence_context,
+                        current_time=datetime.datetime.now(),
+                    )
+
+                    if multi_signal:
+                        # Apply cooldown using strategy_name as key
+                        strategy_name = multi_signal["strategy_name"]
+                        current_time_ts = datetime.datetime.now().timestamp()
+                        last_time = self.last_signal_time.get(strategy_name, 0)
+                        diff = current_time_ts - last_time
+
+                        if diff >= self.signal_cooldown_seconds:
+                            self.last_signal_time[strategy_name] = current_time_ts
+                            logger.info(
+                                f"🔀 MULTI-LEG SIGNAL: {strategy_name} with "
+                                f"{len(multi_signal['legs'])} legs"
+                            )
+                            return multi_signal
+                        else:
+                            logger.warning(
+                                f"⏳ Multi-leg signal {strategy_name} suppressed by cooldown: "
+                                f"{self.signal_cooldown_seconds - diff:.1f}s remaining"
+                            )
+
+                    # Multi-leg active but no signal — fall through to HOLD (skip single-leg)
+                    return None
+
                 # Target Contract
                 self.target_contract = None
                 if greeks and 'expiry_date' in greeks:

@@ -31,6 +31,8 @@ class RiskManager:
     
     # Per-strategy capital allocation limits (% of total capital)
     STRATEGY_ALLOCATION = {
+        "single_leg": 0.20,        # Max 20% on Single Leg (directional buying)
+        "main": 0.20,              # Alias for single_leg (backward compat)
         "iron_condor": 0.40,       # Max 40% on Iron Condor
         "short_straddle": 0.30,    # Max 30% on Short Straddle
         "bull_call_spread": 0.20,  # Max 20% on Bull Call Spread
@@ -67,7 +69,12 @@ class RiskManager:
         # Per-strategy tracking
         self.strategy_pnl: Dict[str, float] = {}
         self.strategy_positions: Dict[str, int] = {}
-        
+
+        # Global cooldown after stop loss hits
+        self.last_stop_loss_time: float = 0.0
+        self.global_cooldown_seconds: int = Config.GLOBAL_COOLDOWN_AFTER_SL_SECONDS
+        self.max_daily_trades: int = Config.MAX_DAILY_TRADES
+
         # Portfolio Greeks
         self.portfolio_greeks = Greeks()
     
@@ -91,7 +98,16 @@ class RiskManager:
             self.strategy_pnl[strategy_name] = self.strategy_pnl.get(strategy_name, 0) + pnl
         
         logger.info(f"💰 Daily P&L: ₹{self.daily_pnl:,.0f} | Trade #{self.daily_trades}")
-    
+
+    def record_stop_loss_hit(self):
+        """Record that a stop loss was triggered. Starts global cooldown."""
+        import time
+        self.last_stop_loss_time = time.time()
+        logger.warning(
+            f"🛑 STOP LOSS HIT: Global cooldown activated for {self.global_cooldown_seconds}s. "
+            f"All new entries blocked until cooldown expires."
+        )
+
     def can_trade(
         self,
         strategy_name: str,
@@ -112,7 +128,24 @@ class RiskManager:
             (can_trade: bool, reason: str)
         """
         self.reset_daily_stats()
-        
+
+        # 0a. Check global cooldown after stop loss
+        import time
+        if self.last_stop_loss_time > 0:
+            elapsed = time.time() - self.last_stop_loss_time
+            if elapsed < self.global_cooldown_seconds:
+                remaining = self.global_cooldown_seconds - elapsed
+                return False, (
+                    f"Global cooldown active: {remaining:.0f}s remaining "
+                    f"after stop loss hit"
+                )
+
+        # 0b. Check daily trade count
+        if self.daily_trades >= self.max_daily_trades:
+            return False, (
+                f"Max daily trades reached: {self.daily_trades}/{self.max_daily_trades}"
+            )
+
         # 1. Check daily loss limit
         daily_loss_limit = self.initial_capital * self.daily_loss_limit_pct
         if self.daily_pnl < -daily_loss_limit:

@@ -12,9 +12,12 @@ class Position:
     """Represents a single open position with entry/exit parameters."""
 
     def __init__(self, instrument_key: str, entry_price: float, quantity: int,
-                 position_type: str, strike: Optional[float] = None, stop_loss_pct: float = 0.30, target_multiplier: float = 1.5,
-                 trailing_activation_pct: float = 1.0, trailing_pct: float = 0.5,
+                 position_type: str, strike: Optional[float] = None,
+                 stop_loss_pct: float = None, target_multiplier: float = None,
+                 trailing_activation_pct: float = None, trailing_pct: float = None,
                  order_id: Optional[str] = None):
+        from app.core.config import Config
+
         self.id = str(uuid.uuid4())
         self.order_id = order_id  # Upstox order ID for tracking via portfolio stream
         self.instrument_key = instrument_key
@@ -25,14 +28,18 @@ class Position:
         self.current_price = entry_price  # Tracks live option price
         self.entry_time = datetime.datetime.now()
         self.order_status = "PLACED"  # PLACED, FILLED, REJECTED, CANCELLED
-        
+
+        # Read from Config with fallback to passed values
+        _sl_pct = stop_loss_pct if stop_loss_pct is not None else Config.HARD_STOP_LOSS_PCT
+        _target_mult = target_multiplier if target_multiplier is not None else Config.TARGET_MULTIPLIER
+
         # Calculate stop loss and target
-        self.stop_loss = entry_price * (1 - stop_loss_pct)
-        self.target = entry_price * target_multiplier
-        
-        # Trailing Stop Configuration
-        self.trailing_activation_pct = trailing_activation_pct
-        self.trailing_pct = trailing_pct
+        self.stop_loss = entry_price * (1 - _sl_pct)
+        self.target = entry_price * _target_mult
+
+        # Trailing Stop Configuration (read from Config if not explicitly passed)
+        self.trailing_activation_pct = trailing_activation_pct if trailing_activation_pct is not None else Config.TRAILING_ACTIVATION_PCT
+        self.trailing_pct = trailing_pct if trailing_pct is not None else Config.TRAILING_PCT
         self.trailing_sl = None
         self.trailing_sl_activated = False
         
@@ -132,8 +139,9 @@ class PositionManager:
                         pos.target = pos_data["target"]
                         pos.trailing_sl = pos_data.get("trailing_sl")
                         pos.trailing_sl_activated = pos_data.get("trailing_sl_activated", False)
-                        pos.trailing_activation_pct = pos_data.get("trailing_activation_pct", 1.0)
-                        pos.trailing_pct = pos_data.get("trailing_pct", 0.5)
+                        from app.core.config import Config
+                        pos.trailing_activation_pct = pos_data.get("trailing_activation_pct", Config.TRAILING_ACTIVATION_PCT)
+                        pos.trailing_pct = pos_data.get("trailing_pct", Config.TRAILING_PCT)
                         pos.current_price = pos_data.get("current_price", pos_data["entry_price"])
                         pos.entry_time = datetime.datetime.fromisoformat(pos_data["entry_time"])
                         self.positions[pos.id] = pos
@@ -162,9 +170,9 @@ class PositionManager:
             raise ValueError(f"❌ Invalid instrument_key format: {instrument_key}. Expected format: NSE_FO|xxxxx")
 
         # Tighten SL on expiry day (0DTE gamma risk)
-        sl_pct = 0.30  # default
+        sl_pct = Config.HARD_STOP_LOSS_PCT  # default from config (was hardcoded 0.30)
         if is_expiry_day:
-            sl_pct *= Config.EXPIRY_DAY.get("sl_tightening_factor", 0.6)  # 30% * 0.6 = 18%
+            sl_pct *= Config.EXPIRY_DAY.get("sl_tightening_factor", 0.6)  # e.g. 15% * 0.6 = 9%
 
         position = Position(instrument_key, entry_price, quantity, position_type, strike=strike, stop_loss_pct=sl_pct, order_id=order_id)
         self.positions[position.id] = position
@@ -183,8 +191,8 @@ class PositionManager:
 
                 if status == "COMPLETE" and fill_price:
                     pos.entry_price = fill_price
-                    pos.stop_loss = fill_price * (1 - 0.30)
-                    pos.target = fill_price * 1.5
+                    pos.stop_loss = fill_price * (1 - Config.HARD_STOP_LOSS_PCT)
+                    pos.target = fill_price * Config.TARGET_MULTIPLIER
                     logger.info(f"Order {order_id} filled @ {fill_price} (was {pos.entry_price})")
 
                 if status == "REJECTED" or status == "CANCELLED":

@@ -15,7 +15,7 @@ from app.utils.json_utils import convert_numpy_types
 from app.data.option_data_handler import OptionDataHandler
 from pathlib import Path
 
-app = FastAPI(title="Upstox Trading Bot API")
+app = FastAPI(title="QuantNifty API")
 
 logger.info("🚀 Initializing FastAPI Server...")
 
@@ -393,7 +393,7 @@ def get_intelligence_status():
 @app.post("/strategies/active")
 def set_active_strategy(request: SetStrategyRequest):
     """Set the active trading strategy."""
-    valid = ["iron_condor", "short_straddle", "bull_call_spread", "bear_put_spread", "breakout"]
+    valid = ["single_leg", "iron_condor", "short_straddle", "bull_call_spread", "bear_put_spread", "breakout"]
     if request.strategy not in valid:
         raise HTTPException(status_code=400, detail=f"Invalid strategy. Choose from: {valid}")
     Config.ACTIVE_STRATEGY = request.strategy

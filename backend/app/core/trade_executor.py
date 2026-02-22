@@ -64,7 +64,7 @@ class TradeExecutor:
             logger.info(f"✅ Risk check passed. Placing {signal} order @ ₹{entry_price:.2f}")
             quantity = self.risk_manager.calculate_position_size(
                 entry_price=entry_price,
-                stop_loss_pct=0.30,
+                stop_loss_pct=Config.HARD_STOP_LOSS_PCT,
                 current_balance=current_balance
             )
             
@@ -144,8 +144,9 @@ class TradeExecutor:
         current_balance = self.order_manager.paper_manager.get_balance()
         current_positions = self.position_manager.get_position_count()
 
+        max_risk = signal_data.get("max_risk", 0)
         can_trade, reason = self.risk_manager.can_trade(
-            strategy_name, current_balance, current_positions, max_risk=0
+            strategy_name, current_balance, current_positions, max_risk=max_risk
         )
         if not can_trade:
             logger.warning(f"Spread blocked by risk manager: {reason}")
@@ -215,7 +216,12 @@ class TradeExecutor:
                 for trade in closed_trades:
                     self.trade_history.append(trade)
                     self.risk_manager.update_daily_pnl(trade['pnl'])
-                    
+
+                    # Trigger global cooldown on stop loss exits
+                    exit_reason = trade.get('reason', '')
+                    if 'STOP_LOSS' in exit_reason.upper():
+                        self.risk_manager.record_stop_loss_hit()
+
                     self.ai_collector.update_exit(
                         trade_id=trade.get('position_id', trade.get('id', 'UNKNOWN')),
                         pnl=trade['pnl'],

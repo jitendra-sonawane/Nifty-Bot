@@ -60,7 +60,7 @@ class TradingBot:
             self.latest_log.pop(0)
 
     def initialize(self):
-        self.log("Initializing Upstox Trading Bot (Async Architecture)...")
+        self.log("Initializing QuantNifty Bot (Async Architecture)...")
 
         # Auth
         if not self.access_token:
@@ -212,7 +212,12 @@ class TradingBot:
             
             # 3. Execute Trade if Signal
             if signal_data and self.trade_executor:
-                await self.trade_executor.execute_trade(signal_data)
+                if "legs" in signal_data:
+                    # Multi-leg strategy signal → use spread trade executor
+                    await self.trade_executor.execute_spread_trade(signal_data)
+                else:
+                    # Single-leg signal → existing path
+                    await self.trade_executor.execute_trade(signal_data)
             elif signal_data is None and self.trade_executor:
                 # Signal was HOLD or strategy returned None — logged in strategy_runner
                 pass
@@ -407,6 +412,18 @@ class TradingBot:
         if not unified_trade_history and self.trade_executor:
             unified_trade_history = self.trade_executor.trade_history[-50:]
 
+        # Build portfolio_stats and reconcile with unified position data.
+        # PaperTradingManager.get_portfolio_stats() only knows its own positions,
+        # but unrealized_pnl and positions may come from PositionManager too.
+        portfolio_stats = paper_mgr.get_portfolio_stats() if paper_mgr else {}
+        if portfolio_stats:
+            portfolio_stats["unrealized_pnl"] = round(unrealized_pnl, 2)
+            portfolio_stats["open_positions"] = len(all_positions)
+
+        # Use risk_manager's daily_pnl (auto-resets at midnight) as the canonical
+        # "today" realized P&L. paper_daily_pnl (session_pnl) is kept for session stats.
+        risk_stats = self.risk_manager.get_stats() if self.risk_manager else {}
+
         status = {
             "is_running": self.is_running,
             "latest_signal": self.strategy_runner.latest_signal if self.strategy_runner else "WAITING",
@@ -414,12 +431,12 @@ class TradingBot:
             "atm_strike": self.market_data.atm_strike if self.market_data else 0,
             "logs": self.latest_log,
             "positions": all_positions,
-            "risk_stats": self.risk_manager.get_stats() if self.risk_manager else {},
+            "risk_stats": risk_stats,
             "trade_history": unified_trade_history,
             "paper_balance": paper_mgr.get_balance() if paper_mgr else 0,
             "paper_pnl": unrealized_pnl,
             "paper_daily_pnl": paper_mgr.get_daily_realized_pnl() if paper_mgr else 0.0,
-            "portfolio_stats": paper_mgr.get_portfolio_stats() if paper_mgr else {},
+            "portfolio_stats": portfolio_stats,
             "market_state": market_state,
             "strategy_data": complete_strategy_data,
             "reasoning": self.strategy_runner.latest_reasoning if self.strategy_runner else {},

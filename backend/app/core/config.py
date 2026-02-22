@@ -50,9 +50,22 @@ class Config:
     RISK_PER_TRADE_PCT = 0.02      # 2% of capital per trade
     DAILY_LOSS_LIMIT_PCT = 0.05    # 5% max daily loss
     MAX_CONCURRENT_POSITIONS = 3
-    
+
+    # ── Position Exit Parameters ─────────────────────────────────────
+    TRAILING_ACTIVATION_PCT = float(os.getenv("TRAILING_ACTIVATION_PCT", "2.0"))    # Activate trailing SL after 2% gain (was 1.0%)
+    TRAILING_PCT = float(os.getenv("TRAILING_PCT", "2.5"))                          # Trail at 2.5% below peak (was 0.5%)
+    HARD_STOP_LOSS_PCT = float(os.getenv("HARD_STOP_LOSS_PCT", "0.15"))            # Hard SL at -15% (was -30%)
+    TARGET_MULTIPLIER = float(os.getenv("TARGET_MULTIPLIER", "1.5"))                # Target at 1.5x entry price
+
+    # ── Cooldown & Daily Limits ──────────────────────────────────────
+    SIGNAL_COOLDOWN_SECONDS = int(os.getenv("SIGNAL_COOLDOWN_SECONDS", "120"))                  # Per-signal-type cooldown
+    GLOBAL_COOLDOWN_AFTER_SL_SECONDS = int(os.getenv("GLOBAL_COOLDOWN_AFTER_SL_SECONDS", "300"))  # 5min global cooldown after any SL hit
+    MAX_DAILY_TRADES = int(os.getenv("MAX_DAILY_TRADES", "25"))                                  # Max trades per day
+
     # ── Active Strategy ───────────────────────────────────────────────
-    ACTIVE_STRATEGY = os.getenv("ACTIVE_STRATEGY", "iron_condor")
+    ACTIVE_STRATEGY = os.getenv("ACTIVE_STRATEGY", "single_leg")
+    SINGLE_LEG_STRATEGIES = {"single_leg", "single_leg_ce", "single_leg_pe"}
+    MULTI_LEG_STRATEGIES = {"iron_condor", "short_straddle", "bull_call_spread", "bear_put_spread", "breakout"}
     
     # ── Iron Condor Strategy Parameters ───────────────────────────────
     IRON_CONDOR = {
