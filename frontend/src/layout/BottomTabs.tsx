@@ -195,7 +195,6 @@ const BottomTabs: React.FC<BottomTabsProps> = React.memo((props) => {
                                 filters={props.filters}
                                 reasoning={props.reasoning}
                                 signal={props.signal}
-                                currentPrice={props.currentPrice}
                                 strategyData={props.strategyData}
                                 pcr={props.pcr}
                                 greeks={props.greeks}
