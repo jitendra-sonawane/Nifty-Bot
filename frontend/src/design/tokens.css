@@ -108,6 +108,7 @@
   --bottom-tabs-height: 340px;          /* default tab panel height */
   --bottom-tabs-header-height: 2.25rem; /* 36px — tab strip */
   --decision-panel-width: 360px;        /* right decision panel */
+  --hero-strip-height: 7rem;            /* 112px — HeroStrip 3-card bar */
 
   /* ── Sector Colors (NiftyHeatmap tile borders) ── */
   --sector-financials: #3b82f6;
