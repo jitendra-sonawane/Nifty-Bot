@@ -145,12 +145,7 @@ const HeroStrip: React.FC<HeroStripProps> = React.memo(({
                 : 'var(--accent-cyan)';
 
     return (
-        <div
-            className="grid gap-3 mb-3"
-            style={{
-                gridTemplateColumns: 'repeat(3, 1fr)',
-            }}
-        >
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-3">
             {/* ── Card 1: Signal State ── */}
             <div
                 className="surface-elevated p-3 rounded-xl"
