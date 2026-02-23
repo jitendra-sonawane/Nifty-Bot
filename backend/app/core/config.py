@@ -155,6 +155,64 @@ class Config:
         "gamma_warning_threshold": 0.05,     # Warn if gamma > 0.05
     }
 
+    # ── Scalp Health Module Thresholds ──────────────────────────────────
+    SCALP_HEALTH = {
+        # Composite score weights: [base, 0dte, weekly(3-5dte)]
+        "weight_greeks":         [0.30, 0.35, 0.25],
+        "weight_oi":             [0.25, 0.20, 0.30],
+        "weight_time_decay":     [0.20, 0.25, 0.15],
+        "weight_liquidity":      [0.15, 0.15, 0.15],
+        "weight_market_context": [0.10, 0.05, 0.15],
+
+        # GEX thresholds (rupees)
+        "gex_high":  3000,
+        "gex_medium": 1000,
+
+        # ATM Proximity
+        "atm_prox_green": 80,
+        "atm_prox_amber": 50,
+
+        # Gamma/Theta ratio
+        "gt_ratio_green": 2.0,
+        "gt_ratio_amber": 1.0,
+
+        # Vega risk (ATM vega absolute value)
+        "vega_high":   8.0,
+        "vega_medium": 4.0,
+
+        # Theta per minute threshold (% of premium)
+        "theta_per_min_red_pct": 0.005,
+
+        # OI concentration
+        "oi_conc_high": 70,
+        "oi_conc_low":  30,
+
+        # OI change rate spike multiplier
+        "oi_rate_spike_mult": 2.0,
+
+        # Unwinding alert: OI drop % at key strike
+        "unwinding_drop_pct": 10.0,
+
+        # Lot liquidity (lots per 5 min)
+        "lot_liq_max": 50,
+        "lot_liq_min":  5,
+
+        # VIX thresholds
+        "vix_high": 18.0,
+        "vix_low":  12.0,
+
+        # Intraday momentum (% of ATR consumed)
+        "momentum_high": 80,
+        "momentum_low":  30,
+
+        # Trading time zones (IST) — [start_hour, start_min, end_hour, end_min, label]
+        "time_zones": [
+            [9,  15, 10,  0, "PEAK"],
+            [10,  0, 14,  0, "LOW"],
+            [14,  0, 15, 30, "MODERATE"],
+        ],
+    }
+
     @classmethod
     def reload(cls):
         """Reload environment variables from .env file.
