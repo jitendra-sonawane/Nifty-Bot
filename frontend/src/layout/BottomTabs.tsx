@@ -1,5 +1,5 @@
 import React, { useState, useCallback, Suspense } from 'react';
-import { BarChart2, Brain, History, TestTube2 } from 'lucide-react';
+import { BarChart2, Brain, History, TestTube2, Activity } from 'lucide-react';
 import PortfolioStats from '../features/positions/PortfolioStats';
 import PositionList from '../features/positions/PositionList';
 import TradeJournal from '../features/positions/TradeJournal';
@@ -8,12 +8,13 @@ import SupportResistance from '../features/options/SupportResistance';
 import PCRGauge from '../features/options/PCRGauge';
 import BacktestPanel from '../features/backtest/BacktestPanel';
 import Skeleton from '../shared/Skeleton';
-import type { FilterData, IntelligenceContext } from '../types/api';
+import type { FilterData, IntelligenceContext, ScalpHealthContext } from '../types/api';
 
 // Intelligence tab is lazily loaded to split its bundle
 const IntelligenceTabContent = React.lazy(() => import('./IntelligenceTabContent'));
+const ScalpHealthTabContent = React.lazy(() => import('../features/scalp-health/ScalpHealthTab'));
 
-type TabId = 'positions' | 'analytics' | 'intelligence' | 'backtest';
+type TabId = 'positions' | 'analytics' | 'scalp_health' | 'intelligence' | 'backtest';
 
 interface TabDef {
     id: TabId;
@@ -23,8 +24,9 @@ interface TabDef {
 
 const TABS: TabDef[] = [
     { id: 'positions',    label: 'Positions',    icon: <History size={13} /> },
-    { id: 'analytics',   label: 'Analytics',    icon: <BarChart2 size={13} /> },
-    { id: 'intelligence', label: 'Intelligence', icon: <Brain size={13} /> },
+    { id: 'analytics',    label: 'Analytics',     icon: <BarChart2 size={13} /> },
+    { id: 'scalp_health', label: 'Scalp Health',  icon: <Activity size={13} /> },
+    { id: 'intelligence', label: 'Intelligence',  icon: <Brain size={13} /> },
     { id: 'backtest',    label: 'Backtest',      icon: <TestTube2 size={13} /> },
 ];
 
@@ -47,6 +49,8 @@ interface BottomTabsProps {
     signal?: string;
     strategyData?: any;
     pcr?: any;
+    // Scalp Health tab
+    scalpHealth?: ScalpHealthContext;
     // Badge
     openPositionCount: number;
 }
@@ -95,6 +99,7 @@ const BottomTabs: React.FC<BottomTabsProps> = React.memo((props) => {
     const [mounted, setMounted] = useState<Record<TabId, boolean>>({
         positions: true,
         analytics: false,
+        scalp_health: false,
         intelligence: false,
         backtest: false,
     });
@@ -182,6 +187,15 @@ const BottomTabs: React.FC<BottomTabsProps> = React.memo((props) => {
                             pcrAnalysis={props.pcrAnalysis}
                             sentiment={props.sentiment}
                         />
+                    </div>
+                )}
+
+                {/* Scalp Health (React.lazy) */}
+                {mounted.scalp_health && (
+                    <div style={{ display: activeTab === 'scalp_health' ? 'block' : 'none' }}>
+                        <Suspense fallback={<Skeleton lines={6} />}>
+                            <ScalpHealthTabContent data={props.scalpHealth} />
+                        </Suspense>
                     </div>
                 )}
 

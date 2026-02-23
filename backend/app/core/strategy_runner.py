@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import datetime
+import numpy as np
 import pandas as pd
 from typing import List, Callable, Dict, Optional, TYPE_CHECKING
 from app.strategies.strategy import StrategyEngine
@@ -134,11 +135,18 @@ class StrategyRunner:
             intelligence_context = None
             if self.intelligence_engine and not dry_run:
                 try:
+                    # Compute 5-day realized vol for ScalpHealthModule
+                    df_close_std = None
+                    if df is not None and len(df) >= 5:
+                        log_returns = np.log(df['close'] / df['close'].shift(1)).dropna()
+                        if len(log_returns) >= 5:
+                            df_close_std = float(log_returns.tail(5).std() * np.sqrt(252))
                     self.intelligence_engine.update({
                         "df":     df,
                         "greeks": greeks,
                         "iv":     (greeks.get("ce", {}).get("iv") if greeks else None),
                         "expiry": (greeks.get("expiry_date") if greeks else None),
+                        "df_close_std": df_close_std,
                     })
                     intelligence_context = self.intelligence_engine.get_context()
                 except Exception as e:

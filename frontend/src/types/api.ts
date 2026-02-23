@@ -214,6 +214,68 @@ export interface OIAnalysisContext {
     snapshots_count: number;
 }
 
+export interface ScalpHealthContext {
+    // Composite
+    score: number;
+    score_band: 'PRIME' | 'GOOD' | 'CAUTION' | 'AVOID';
+    sub_scores: Record<string, number>;
+
+    // DTE
+    dte_days: number;
+    dte_hours: number;
+    dte_minutes: number;
+    expiry_date: string;
+
+    // Greeks (10 metrics)
+    gex_rupees: number;
+    atm_proximity: number;
+    gamma_theta_ratio: number;
+    delta_flip_price: number;
+    delta_flip_distance: number;
+    ce_delta: number;
+    pe_delta: number;
+    delta_per_rupee_ce: number;
+    delta_per_rupee_pe: number;
+    iv_hv_spread: number;
+    vega_risk: number;
+    vega_risk_label: 'LOW' | 'MEDIUM' | 'HIGH';
+    theta_per_minute: number;
+    gamma_peak: boolean;
+
+    // OI (9 metrics)
+    oi_buildup_signal: string;
+    oi_change_ce: number;
+    oi_change_pe: number;
+    oi_change_rate: number;
+    oi_rate_alert: boolean;
+    max_oi_ce_strike: number | null;
+    max_oi_pe_strike: number | null;
+    max_pain_strike: number | null;
+    max_pain_distance: number;
+    oi_concentration: number;
+    volume_oi_ratio_ce: number;
+    volume_oi_ratio_pe: number;
+    pcr_trend: 'RISING' | 'FALLING' | 'STABLE';
+    unwinding_alert: { strike: number; oi_drop_pct: number } | null;
+
+    // Liquidity (3 metrics)
+    spread_ce_pct: number | null;
+    spread_pe_pct: number | null;
+    spread_ce_label: 'EXCELLENT' | 'GOOD' | 'POOR';
+    spread_pe_label: 'EXCELLENT' | 'GOOD' | 'POOR';
+    effective_spread: number;
+    lot_liquidity_score: number;
+
+    // Market Context (4 metrics)
+    regime: string;
+    regime_scalp_recommendation: string;
+    vix_level: number;
+    vix_trend: 'UP' | 'DOWN' | 'FLAT';
+    intraday_momentum: number;
+    time_of_day_zone: 'PEAK' | 'MODERATE' | 'LOW' | 'CLOSED';
+    minutes_to_next_zone: number;
+}
+
 export interface PDHPDLPDCData {
     pdh: number | null;
     pdl: number | null;
@@ -227,6 +289,7 @@ export interface IntelligenceContext {
     order_book?: OrderBookContext;
     portfolio_greeks?: PortfolioGreeksContext;
     oi_analysis?: OIAnalysisContext;
+    scalp_health?: ScalpHealthContext;
 }
 
 export interface ModuleToggleState {

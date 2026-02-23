@@ -91,6 +91,7 @@ const Dashboard: React.FC = () => {
         signal,
         strategyData,
         pcr: status?.market_state?.pcr,
+        scalpHealth: intelligence?.scalp_health,
         openPositionCount,
     }), [status, mergedGreeksData, strategyData, pcrAnalysis, sentiment, intelligence, reasoning, signal, openPositionCount]);
 
@@ -164,7 +165,7 @@ const Dashboard: React.FC = () => {
                 reasoning={reasoning}
                 positions={(status as any)?.positions}
                 pnl={{
-                    daily: (status as any)?.paper_daily_pnl ?? (status as any)?.risk_stats?.daily_pnl ?? 0,
+                    daily: (status as any)?.risk_stats?.daily_pnl ?? 0,
                     unrealized: (status as any)?.paper_pnl ?? 0,
                 }}
                 priceHistory={priceHistory}
@@ -233,7 +234,7 @@ const Dashboard: React.FC = () => {
                                 intelligence={intelligence}
                                 positions={(status as any)?.positions ?? []}
                                 pnl={{
-                                    daily: (status as any)?.paper_daily_pnl ?? (status as any)?.risk_stats?.daily_pnl ?? 0,
+                                    daily: (status as any)?.risk_stats?.daily_pnl ?? 0,
                                     unrealized: (status as any)?.paper_pnl ?? 0,
                                 }}
                                 riskStats={(status as any)?.risk_stats}
