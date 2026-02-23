@@ -22,6 +22,7 @@ from app.intelligence.order_book import OrderBookModule
 from app.intelligence.market_breadth import MarketBreadthModule
 from app.intelligence.portfolio_greeks import PortfolioGreeksModule
 from app.intelligence.oi_analysis import OIAnalysisModule
+from app.intelligence.scalp_health import ScalpHealthModule
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -85,7 +86,8 @@ class TradingBot:
         self.intelligence_engine.register(MarketBreadthModule())
         self.intelligence_engine.register(PortfolioGreeksModule())
         self.intelligence_engine.register(OIAnalysisModule())
-        self.log("Intelligence engine initialized with 6 modules.")
+        self.intelligence_engine.register(ScalpHealthModule())
+        self.log("Intelligence engine initialized with 7 modules.")
 
         # ── Core Modules (pass intelligence_engine for data feeding) ───────
         self.market_data = MarketDataManager(
@@ -222,13 +224,22 @@ class TradingBot:
                 # Signal was HOLD or strategy returned None — logged in strategy_runner
                 pass
                 
-            # 3b. Push positions to PortfolioGreeks intelligence module
+            # 3b. Push positions + market data to intelligence modules
             if self.intelligence_engine and self.position_manager:
                 positions = self.position_manager.get_positions()
-                self.intelligence_engine.update({
+                intel_data = {
                     "positions": positions,
                     "greeks":    market_state.get("greeks"),
-                })
+                    # Additional data for ScalpHealthModule
+                    "current_price": price,
+                    "vix": market_state.get("vix"),
+                    "bid_ask_cache": (self.market_data.bid_ask_cache if self.market_data and hasattr(self.market_data, "bid_ask_cache") else {}),
+                }
+                # Add strategy data if available
+                if self.strategy_runner and hasattr(self.strategy_runner, "latest_strategy_data"):
+                    sd = self.strategy_runner.latest_strategy_data or {}
+                    intel_data["atr_pct"] = sd.get("atr_pct")
+                self.intelligence_engine.update(intel_data)
 
             # 4. Check Exits and Ensure Subscription
             if self.position_manager and self.position_manager.get_position_count() > 0:
