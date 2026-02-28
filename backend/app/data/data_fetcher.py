@@ -588,6 +588,41 @@ class DataFetcher:
             
         return future_opts['expiry'].min().strftime("%Y-%m-%d")
 
+    def get_futures_instrument_key(self):
+        """Find the near-month Nifty futures instrument key.
+        Returns the instrument_key string (e.g. 'NSE_FO|12345') or None."""
+        if self.instruments_df is None:
+            self.load_instruments()
+
+        today = datetime.now().date()
+
+        nifty_futs = self.instruments_df[
+            (self.instruments_df['name'] == 'NIFTY') &
+            (self.instruments_df['instrument_type'] == 'FUTIDX')
+        ].copy()
+
+        if nifty_futs.empty:
+            logger.warning("No Nifty futures found in instruments")
+            return None
+
+        nifty_futs['expiry_date'] = pd.to_datetime(nifty_futs['expiry']).dt.date
+        future_futs = nifty_futs[nifty_futs['expiry_date'] >= today]
+
+        if future_futs.empty:
+            logger.warning("No unexpired Nifty futures found")
+            return None
+
+        nearest = future_futs.loc[future_futs['expiry_date'].idxmin()]
+        key = nearest['instrument_key']
+
+        if isinstance(key, str) and '|' in key:
+            logger.info(f"Futures key: {key} (expiry: {nearest['expiry_date']})")
+            return key
+
+        logger.warning(f"Invalid futures key format: {key}")
+        return None
+
+
     def get_atm_strike(self, spot_price, step=50):
         return round(spot_price / step) * step
     
