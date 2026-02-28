@@ -13,6 +13,7 @@ import PriceChart from './features/market/PriceChart';
 import NiftyHeatmap from './features/market/NiftyHeatmap';
 import MarketSnapshotDashboard from './features/market/MarketSnapshotDashboard';
 import IndicatorStrip from './features/market/IndicatorStrip';
+import FuturesVolumeStrip from './features/market/FuturesVolumeStrip';
 
 // Decision Panel
 import BotControls from './features/controls/BotControls';
@@ -252,6 +253,9 @@ const Dashboard: React.FC = () => {
                         )}
                     </div>
 
+
+                    {/* Futures Volume + CVD */}
+                    <FuturesVolumeStrip data={(status as any)?.futures_volume} />
                     {/* Indicator Strip */}
                     <IndicatorStrip strategyData={strategyData} currentPrice={currentPrice} />
                 </div>
