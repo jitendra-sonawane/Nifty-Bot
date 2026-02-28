@@ -103,6 +103,10 @@ class MarketDataManager:
         self.is_running = False
         self.main_loop = None  # To capture the main event loop
 
+        # Futures Volume Tracker
+        self.futures_volume_tracker = None  # Set by TradingBot after init
+        self._futures_key: Optional[str] = None
+
     async def start(self):
         self.is_running = True
         self.main_loop = asyncio.get_running_loop() # Capture loop here
@@ -168,6 +172,14 @@ class MarketDataManager:
                     pe_count = sum(1 for meta in self.pcr_option_metadata.values() if meta['option_type'] == 'PE')
                     logger.info(f"✅ PCR Options: {len(self.pcr_option_keys)} ({ce_count} CE, {pe_count} PE)")
 
+            # ── Futures instrument key ──────────────────────────────────────
+            if not self._futures_key:
+                self._futures_key = self.data_fetcher.get_futures_instrument_key()
+                if self._futures_key:
+                    logger.info(f"Nifty Futures: {self._futures_key}")
+                else:
+                    logger.warning("Could not find Nifty futures instrument")
+
             # ── Build instrument subscription list ────────────────────────
             instrument_keys = [self.nifty_key]
 
@@ -185,6 +197,10 @@ class MarketDataManager:
             # Add PCR options
             if self.pcr_option_keys:
                 instrument_keys.extend(self.pcr_option_keys)
+
+            # Add Nifty Futures
+            if self._futures_key:
+                instrument_keys.append(self._futures_key)
 
             logger.info(f"📊 Total subscriptions: {len(instrument_keys)} instruments")
 
@@ -342,6 +358,20 @@ class MarketDataManager:
                         # Debug logging for PCR options (sample)
                         if oi is not None and key in self.pcr_option_metadata and len(self.pcr_oi_data) % 10 == 0:
                              logger.debug(f"📊 PCR OI Update: {key} -> {oi} (Total tracked: {len(self.pcr_oi_data)})")
+
+                        # Route futures ticks to FuturesVolumeTracker
+                        if (
+                            key == self._futures_key
+                            and self.futures_volume_tracker is not None
+                            and price is not None
+                        ):
+                            fut_vol = traded_vol if traded_vol is not None else 0.0
+                            self.futures_volume_tracker.on_tick(
+                                price=float(price),
+                                volume=float(fut_vol),
+                                timestamp=time.time(),
+                            )
+
                         
                         # Nifty 50 Stock Update
                         if key in self.nifty50_isins:
