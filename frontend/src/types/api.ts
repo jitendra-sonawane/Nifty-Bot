@@ -295,3 +295,24 @@ export interface IntelligenceContext {
 export interface ModuleToggleState {
     [moduleName: string]: boolean;
 }
+
+// ═══ Futures Volume + CVD Types ═════════════════════════════════════════
+
+export interface FuturesVolumeCandle {
+    time: string;
+    timestamp: number;
+    total_volume: number;
+    buy_volume: number;
+    sell_volume: number;
+    delta: number;
+    cvd: number;
+}
+
+export interface FuturesVolumeData {
+    instrument_key: string;
+    futures_ltp: number;
+    candles: FuturesVolumeCandle[];
+    current_cvd: number;
+    current_delta: number;
+    total_volume: number;
+}
