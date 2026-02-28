@@ -23,6 +23,7 @@ from app.intelligence.market_breadth import MarketBreadthModule
 from app.intelligence.portfolio_greeks import PortfolioGreeksModule
 from app.intelligence.oi_analysis import OIAnalysisModule
 from app.intelligence.scalp_health import ScalpHealthModule
+from app.core.futures_volume import FuturesVolumeTracker
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -95,6 +96,10 @@ class TradingBot:
             self.access_token,
             intelligence_engine=self.intelligence_engine,
         )
+
+        # ── Futures Volume Tracker ──────────────────────────────────────
+        self.futures_volume_tracker = FuturesVolumeTracker()
+        self.market_data.futures_volume_tracker = self.futures_volume_tracker
         self.strategy_runner = StrategyRunner(
             strategy_engine,
             self.data_fetcher,
@@ -460,6 +465,7 @@ class TradingBot:
             "vix": market_state.get("vix"),
             "intelligence": intelligence_snapshot,   # New: full intelligence context
             "token_valid": getattr(self.data_fetcher, "token_valid", True) if self.data_fetcher else True,
+            "futures_volume": self.futures_volume_tracker.get_snapshot() if self.futures_volume_tracker else None,
             "config": {
                 "timeframe": self.timeframe,
                 "symbol": self.nifty_key,
