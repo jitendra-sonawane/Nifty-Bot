@@ -174,11 +174,15 @@ class MarketDataManager:
 
             # ── Futures instrument key ──────────────────────────────────────
             if not self._futures_key:
-                self._futures_key = self.data_fetcher.get_futures_instrument_key()
-                if self._futures_key:
-                    logger.info(f"Nifty Futures: {self._futures_key}")
-                else:
-                    logger.warning("Could not find Nifty futures instrument")
+                try:
+                    self._futures_key = self.data_fetcher.get_futures_instrument_key()
+                    if self._futures_key:
+                        logger.info(f"✅ Nifty Futures: {self._futures_key}")
+                    else:
+                        logger.warning("⚠️ Could not find Nifty futures instrument")
+                except Exception as e:
+                    logger.warning(f"⚠️ Futures key lookup failed (non-fatal): {e}")
+                    self._futures_key = None
 
             # ── Build instrument subscription list ────────────────────────
             instrument_keys = [self.nifty_key]
@@ -361,16 +365,20 @@ class MarketDataManager:
 
                         # Route futures ticks to FuturesVolumeTracker
                         if (
-                            key == self._futures_key
+                            self._futures_key
+                            and key == self._futures_key
                             and self.futures_volume_tracker is not None
                             and price is not None
                         ):
-                            fut_vol = traded_vol if traded_vol is not None else 0.0
-                            self.futures_volume_tracker.on_tick(
-                                price=float(price),
-                                volume=float(fut_vol),
-                                timestamp=time.time(),
-                            )
+                            try:
+                                fut_vol = traded_vol if traded_vol is not None else 0.0
+                                self.futures_volume_tracker.on_tick(
+                                    price=float(price),
+                                    volume=float(fut_vol),
+                                    timestamp=time.time(),
+                                )
+                            except Exception as e:
+                                logger.debug(f"Futures volume tick error: {e}")
 
                         
                         # Nifty 50 Stock Update
