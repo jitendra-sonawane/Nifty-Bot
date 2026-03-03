@@ -371,10 +371,22 @@ class MarketDataManager:
                             and price is not None
                         ):
                             try:
-                                fut_vol = traded_vol if traded_vol is not None else 0.0
+                                # Extract per-trade volume for futures
+                                # Priority: ltpc.ltq (last traded qty) > eFeedDetails > marketOHLC
+                                fut_vol = traded_vol
+                                if fut_vol is None and "fullFeed" in feed:
+                                    mff = feed["fullFeed"].get("marketFF", {})
+                                    ltpc = mff.get("ltpc", {})
+                                    fut_vol = ltpc.get("ltq")
+                                    if fut_vol is None and "eFeedDetails" in mff:
+                                        efd = mff["eFeedDetails"]
+                                        fut_vol = efd.get("tv") or efd.get("v")
+
+                                fut_vol = float(fut_vol) if fut_vol is not None else 0.0
+
                                 self.futures_volume_tracker.on_tick(
                                     price=float(price),
-                                    volume=float(fut_vol),
+                                    volume=fut_vol,
                                     timestamp=time.time(),
                                 )
                             except Exception as e:

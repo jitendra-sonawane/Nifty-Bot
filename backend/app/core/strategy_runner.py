@@ -192,7 +192,7 @@ class StrategyRunner:
                 
                 self.latest_strategy_data = result
                 self.latest_signal = signal
-                
+
                 # Generate Reasoning
                 try:
                     support_resistance = self.latest_strategy_data.get('support_resistance', {})
@@ -307,6 +307,7 @@ class StrategyRunner:
                                     "supertrend": supertrend,
                                     "ema_5": cur_ema_5,
                                     "ema_20": cur_ema_20,
+                                    "atr_pct": result.get('atr_pct'),
                                 }
                             }
                             return signal_data
@@ -329,9 +330,22 @@ class StrategyRunner:
     def _initialize_data(self):
         """Fetch initial historical data and setup managers."""
         try:
-            from_date = (datetime.datetime.now() - datetime.timedelta(days=30)).strftime('%Y-%m-%d')
-            to_date = (datetime.datetime.now() + datetime.timedelta(days=1)).strftime('%Y-%m-%d')
-            
+            # Upstox v3 API has date-range limits per interval:
+            #   1minute  → ~2 days,  5minute → ~7 days,  15/30minute → ~30 days,
+            #   60minute/hour → ~365 days,  day/week/month → ~365 days
+            # We try the largest safe range first, then fall back to shorter.
+            range_days_map = {
+                '1minute':  2,
+                '5minute':  7,
+                '10minute': 7,
+                '15minute': 30,
+                '30minute': 30,
+                '60minute': 365,
+                'day':      365,
+                'week':     365,
+                'month':    365,
+            }
+
             interval_map = {
                 '1minute': '1minute',
                 '5minute': '5minute',
@@ -344,10 +358,22 @@ class StrategyRunner:
                 'month': 'month'
             }
             interval = interval_map.get(self.timeframe, '5minute')
-            
-            logger.info(f"📊 Initializing StrategyRunner: timeframe={self.timeframe}, interval={interval}")
-            
+
+            # Use today as to_date (not tomorrow) — Upstox may reject future dates
+            to_date = datetime.datetime.now().strftime('%Y-%m-%d')
+            range_days = range_days_map.get(interval, 7)
+            from_date = (datetime.datetime.now() - datetime.timedelta(days=range_days)).strftime('%Y-%m-%d')
+
+            logger.info(f"📊 Initializing StrategyRunner: timeframe={self.timeframe}, interval={interval}, range={range_days}d")
+
             df_historical = self.data_fetcher.get_historical_data('NSE_INDEX|Nifty 50', interval, from_date, to_date)
+
+            # Retry with shorter range if first attempt failed
+            if df_historical is None and range_days > 3:
+                shorter_days = max(range_days // 2, 2)
+                from_date_retry = (datetime.datetime.now() - datetime.timedelta(days=shorter_days)).strftime('%Y-%m-%d')
+                logger.info(f"🔄 Retrying with shorter range: {shorter_days}d ({from_date_retry} to {to_date})")
+                df_historical = self.data_fetcher.get_historical_data('NSE_INDEX|Nifty 50', interval, from_date_retry, to_date)
             
             # Fetch Intraday (Today's) Data to fill the gap
             df_intraday = self.data_fetcher.get_intraday_data('NSE_INDEX|Nifty 50', interval)
