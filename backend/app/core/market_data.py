@@ -105,6 +105,7 @@ class MarketDataManager:
 
         # Futures Volume Tracker
         self.futures_volume_tracker = None  # Set by TradingBot after init
+        self.order_flow_analyzer = None  # Set by TradingBot after init
         self._futures_key: Optional[str] = None
 
     async def start(self):
@@ -389,6 +390,27 @@ class MarketDataManager:
                                     volume=fut_vol,
                                     timestamp=time.time(),
                                 )
+
+                                # Feed OrderFlowAnalyzer (same tick data + direction)
+                                if self.order_flow_analyzer is not None:
+                                    ofa_dir = self.futures_volume_tracker._last_direction if self.futures_volume_tracker else "buy"
+                                    self.order_flow_analyzer.on_tick(
+                                        price=float(price),
+                                        volume=fut_vol,
+                                        direction=ofa_dir,
+                                        timestamp=time.time(),
+                                    )
+
+                                    # Feed futures order book depth
+                                    if "fullFeed" in feed:
+                                        mff = feed["fullFeed"].get("marketFF", {})
+                                        market_level = mff.get("marketLevel", {})
+                                        raw_depth = market_level.get("bidAskQuote", [])
+                                        if raw_depth:
+                                            bids = [{"price": float(e.get("bidP", 0)), "qty": float(e.get("bidQ", 0))} for e in raw_depth if e.get("bidP")]
+                                            asks = [{"price": float(e.get("askP", 0)), "qty": float(e.get("askQ", 0))} for e in raw_depth if e.get("askP")]
+                                            if bids or asks:
+                                                self.order_flow_analyzer.update_order_book(bids, asks)
                             except Exception as e:
                                 logger.debug(f"Futures volume tick error: {e}")
 

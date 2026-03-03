@@ -34,6 +34,7 @@ class FuturesVolumeTracker:
         self._candles: List[Dict] = []
         self._cvd: float = 0.0
         self._total_volume: float = 0.0
+        self._on_candle_close_cb = None  # Optional: fn(candle_close_price, cvd)
 
     def on_tick(self, price: float, volume: float, timestamp: float) -> None:
         """Process a single futures tick. Thread-safe."""
@@ -94,6 +95,12 @@ class FuturesVolumeTracker:
 
         self._cvd += self._current_candle["delta"]
         self._current_candle["cvd"] = self._cvd
+
+        if self._on_candle_close_cb:
+            try:
+                self._on_candle_close_cb(self._futures_ltp, self._cvd)
+            except Exception as e:
+                logger.debug(f"Candle close callback error: {e}")
 
         self._candles.append(self._current_candle)
 

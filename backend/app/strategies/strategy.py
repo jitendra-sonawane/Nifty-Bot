@@ -519,6 +519,16 @@ class StrategyEngine:
 
         return True, ""
 
+    def _check_order_flow_filter(self, intel: Dict, direction: str) -> tuple:
+        """Check order flow analysis supports the signal direction."""
+        of_ctx = intel.get("order_flow")
+        if not of_ctx:
+            return True, ""  # No data — don't block
+        if not of_ctx.get("pass", True):
+            score = of_ctx.get("score", 0)
+            return False, f"Order flow score {score:.0f}/100 (needs ≥40)"
+        return True, ""
+
     # ── Main Signal Method ──────────────────────────────────────────────────
 
     def check_signal(
@@ -613,6 +623,7 @@ class StrategyEngine:
             'time_of_day':       True,
             'oi_buildup':        True,
             'expiry_day':        True,
+            'order_flow':        True,
         }
 
         # 1. Supertrend (evaluated in final decision)
@@ -714,6 +725,7 @@ class StrategyEngine:
                 passes_oi,       r_oi      = self._check_oi_buildup_filter(intel, direction) if intel else (True, "")
                 passes_expiry,   r_expiry  = self._check_expiry_day_filter(greeks, current_time, direction)
                 passes_pop,      r_pop     = self._check_pop_filter(intel, direction) if intel else (True, "")
+                passes_of,       r_of      = self._check_order_flow_filter(intel, direction) if intel else (True, "")
 
                 intelligence_filter_reasons[direction] = {
                     "market_regime":  (passes_regime,    r_regime),
@@ -726,6 +738,7 @@ class StrategyEngine:
                     "oi_buildup":     (passes_oi,         r_oi),
                     "expiry_day":     (passes_expiry,     r_expiry),
                     "pop":            (passes_pop,        r_pop),
+                    "order_flow":     (passes_of,         r_of),
                 }
 
         def intel_pass(direction: str) -> bool:
@@ -759,6 +772,7 @@ class StrategyEngine:
             filter_checks['time_of_day']    = _filter_ok('time_of_day')
             filter_checks['oi_buildup']     = _filter_ok('oi_buildup')
             filter_checks['expiry_day']     = _filter_ok('expiry_day')
+            filter_checks['order_flow']     = _filter_ok('order_flow')
 
         # ── Final decision ──────────────────────────────────────────────────
         signal = "HOLD"

@@ -24,6 +24,8 @@ from app.intelligence.portfolio_greeks import PortfolioGreeksModule
 from app.intelligence.oi_analysis import OIAnalysisModule
 from app.intelligence.scalp_health import ScalpHealthModule
 from app.core.futures_volume import FuturesVolumeTracker
+from app.core.order_flow import OrderFlowAnalyzer
+from app.intelligence.order_flow_module import OrderFlowModule
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -88,7 +90,7 @@ class TradingBot:
         self.intelligence_engine.register(PortfolioGreeksModule())
         self.intelligence_engine.register(OIAnalysisModule())
         self.intelligence_engine.register(ScalpHealthModule())
-        self.log("Intelligence engine initialized with 7 modules.")
+        self.log("Intelligence engine initialized with 8 modules.")
 
         # ── Core Modules (pass intelligence_engine for data feeding) ───────
         self.market_data = MarketDataManager(
@@ -100,6 +102,13 @@ class TradingBot:
         # ── Futures Volume Tracker ──────────────────────────────────────
         self.futures_volume_tracker = FuturesVolumeTracker()
         self.market_data.futures_volume_tracker = self.futures_volume_tracker
+
+        # ── Order Flow Analyzer ───────────────────────────────────────
+        self.order_flow_analyzer = OrderFlowAnalyzer()
+        self.market_data.order_flow_analyzer = self.order_flow_analyzer
+        self.intelligence_engine.register(OrderFlowModule(self.order_flow_analyzer))
+        self.futures_volume_tracker._on_candle_close_cb = self.order_flow_analyzer.on_candle_close
+
         self.strategy_runner = StrategyRunner(
             strategy_engine,
             self.data_fetcher,
@@ -466,6 +475,7 @@ class TradingBot:
             "intelligence": intelligence_snapshot,   # New: full intelligence context
             "token_valid": getattr(self.data_fetcher, "token_valid", True) if self.data_fetcher else True,
             "futures_volume": self.futures_volume_tracker.get_snapshot() if self.futures_volume_tracker else None,
+            "order_flow": self.order_flow_analyzer.get_snapshot() if hasattr(self, 'order_flow_analyzer') and self.order_flow_analyzer else None,
             "config": {
                 "timeframe": self.timeframe,
                 "symbol": self.nifty_key,
