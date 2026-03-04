@@ -93,6 +93,8 @@ const Dashboard: React.FC = () => {
         strategyData,
         pcr: status?.market_state?.pcr,
         scalpHealth: intelligence?.scalp_health,
+        orderFlowData: (status as any)?.order_flow,
+        futuresLtp: (status as any)?.futures_volume?.futures_ltp,
         openPositionCount,
     }), [status, mergedGreeksData, strategyData, pcrAnalysis, sentiment, intelligence, reasoning, signal, openPositionCount]);
 

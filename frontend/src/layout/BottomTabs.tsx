@@ -1,5 +1,5 @@
 import React, { useState, useCallback, Suspense } from 'react';
-import { BarChart2, Brain, History, TestTube2, Activity } from 'lucide-react';
+import { BarChart2, Brain, History, TestTube2, Activity, Waves } from 'lucide-react';
 import PortfolioStats from '../features/positions/PortfolioStats';
 import PositionList from '../features/positions/PositionList';
 import TradeJournal from '../features/positions/TradeJournal';
@@ -13,8 +13,9 @@ import type { FilterData, IntelligenceContext, ScalpHealthContext } from '../typ
 // Intelligence tab is lazily loaded to split its bundle
 const IntelligenceTabContent = React.lazy(() => import('./IntelligenceTabContent'));
 const ScalpHealthTabContent = React.lazy(() => import('../features/scalp-health/ScalpHealthTab'));
+const OrderFlowTabContent = React.lazy(() => import('../features/order-flow/OrderFlowTab'));
 
-type TabId = 'positions' | 'analytics' | 'scalp_health' | 'intelligence' | 'backtest';
+type TabId = 'positions' | 'analytics' | 'scalp_health' | 'order_flow' | 'intelligence' | 'backtest';
 
 interface TabDef {
     id: TabId;
@@ -26,6 +27,7 @@ const TABS: TabDef[] = [
     { id: 'positions',    label: 'Positions',    icon: <History size={13} /> },
     { id: 'analytics',    label: 'Analytics',     icon: <BarChart2 size={13} /> },
     { id: 'scalp_health', label: 'Scalp Health',  icon: <Activity size={13} /> },
+    { id: 'order_flow',  label: 'Order Flow',    icon: <Waves size={13} /> },
     { id: 'intelligence', label: 'Intelligence',  icon: <Brain size={13} /> },
     { id: 'backtest',    label: 'Backtest',      icon: <TestTube2 size={13} /> },
 ];
@@ -51,6 +53,9 @@ interface BottomTabsProps {
     pcr?: any;
     // Scalp Health tab
     scalpHealth?: ScalpHealthContext;
+    // Order Flow tab
+    orderFlowData?: any;
+    futuresLtp?: number;
     // Badge
     openPositionCount: number;
 }
@@ -100,6 +105,7 @@ const BottomTabs: React.FC<BottomTabsProps> = React.memo((props) => {
         positions: true,
         analytics: false,
         scalp_health: false,
+        order_flow: false,
         intelligence: false,
         backtest: false,
     });
@@ -195,6 +201,18 @@ const BottomTabs: React.FC<BottomTabsProps> = React.memo((props) => {
                     <div style={{ display: activeTab === 'scalp_health' ? 'block' : 'none' }}>
                         <Suspense fallback={<Skeleton lines={6} />}>
                             <ScalpHealthTabContent data={props.scalpHealth} />
+                        </Suspense>
+                    </div>
+                )}
+
+                {/* Order Flow (React.lazy) */}
+                {mounted.order_flow && (
+                    <div style={{ display: activeTab === 'order_flow' ? 'block' : 'none' }}>
+                        <Suspense fallback={<Skeleton lines={6} />}>
+                            <OrderFlowTabContent
+                                data={props.orderFlowData}
+                                futuresLtp={props.futuresLtp}
+                            />
                         </Suspense>
                     </div>
                 )}
