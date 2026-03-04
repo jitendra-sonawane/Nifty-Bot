@@ -316,3 +316,35 @@ export interface FuturesVolumeData {
     current_delta: number;
     total_volume: number;
 }
+
+// ═══ Order Flow & Microstructure Types ════════════════════════════════════
+
+export interface VolumeProfileBin {
+    price: number;
+    buy_vol: number;
+    sell_vol: number;
+    total: number;
+}
+
+export interface DeltaDivergence {
+    active: boolean;
+    type: 'bullish' | 'bearish' | null;
+    strength: number;
+    bars: number;
+}
+
+export interface OrderFlowData {
+    vwap: number;
+    vwap_upper: number;
+    vwap_lower: number;
+    std_dev: number;
+    volume_profile: VolumeProfileBin[];
+    poc: number;
+    value_area_high: number;
+    value_area_low: number;
+    book_imbalance: number;
+    bid_total: number;
+    ask_total: number;
+    delta_divergence: DeltaDivergence;
+    total_volume: number;
+}
