@@ -407,8 +407,8 @@ class MarketDataManager:
                                         market_level = mff.get("marketLevel", {})
                                         raw_depth = market_level.get("bidAskQuote", [])
                                         if raw_depth:
-                                            bids = [{"price": float(e.get("bidP", 0)), "qty": float(e.get("bidQ", 0))} for e in raw_depth if e.get("bidP")]
-                                            asks = [{"price": float(e.get("askP", 0)), "qty": float(e.get("askQ", 0))} for e in raw_depth if e.get("askP")]
+                                            bids = [(float(e.get("bidP", 0)), float(e.get("bidQ", 0))) for e in raw_depth if e.get("bidP")]
+                                            asks = [(float(e.get("askP", 0)), float(e.get("askQ", 0))) for e in raw_depth if e.get("askP")]
                                             if bids or asks:
                                                 self.order_flow_analyzer.update_order_book(bids, asks)
                             except Exception as e:
